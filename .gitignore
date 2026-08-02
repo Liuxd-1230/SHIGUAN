@@ -1,0 +1,46 @@
+# ---- 依赖与构建产物 ----
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ---- 环境变量（含密钥，绝对禁止提交） ----
+.env
+.env.*
+!.env.example
+
+# ---- 真实用户数据（存档 / 数据库 / 上传） ----
+*.ck3
+*.ck2
+*.eu4
+*.sav
+*.bin
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- 项目内部数据（不进版本库） ----
+.workbuddy/
+
+# ---- 测试与覆盖 ----
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+
+# ---- PWA 构建产物 ----
+apps/web/public/sw.js
+apps/web/dist/
