@@ -1,0 +1,46 @@
+{
+  "isMock": true,
+  "source": "fixtures/mock",
+  "schemaVersion": "0.5.0",
+  "generatedFor": "contract-test",
+  "data": {
+    "id": "char_test_1",
+    "name": "Test Arnulf",
+    "sex": "male",
+    "traits": [],
+    "titles": [],
+    "residences": [],
+    "courtPositions": [],
+    "parents": [],
+    "spouses": [],
+    "children": [],
+    "siblings": [],
+    "friends": [],
+    "rivals": [],
+    "lovers": [],
+    "wars": [],
+    "imprisonments": [],
+    "travels": [],
+    "memories": [],
+    "timeline": [
+      {
+        "id": "ev_birth",
+        "type": "birth",
+        "title": "诞生",
+        "description": "出生于某年",
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "evr1",
+            "sourceType": "save_block",
+            "sourcePath": "character/123/birth",
+            "rawKey": "birth",
+            "description": "存档记录出生日期",
+            "confidence": "confirmed"
+          }
+        ]
+      }
+    ],
+    "evidenceWarnings": []
+  }
+}

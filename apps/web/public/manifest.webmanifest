@@ -1,0 +1,18 @@
+{
+  "name": "史官 SHIGUAN",
+  "short_name": "史官",
+  "description": "基于真实 CK3 存档证据，为人物立传的 AI 史官。",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1e6d2",
+  "theme_color": "#7a1f2b",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

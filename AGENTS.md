@@ -46,8 +46,19 @@
 - TS：`packages/save-schema/src/types.ts`
 - Python：`packages/save-schema/py/models.py`
 - 修改字段时二者必须同步，并同步更新 `docs/architecture.md` 的模型说明。
-- 核心类型：`CharacterProfile`（原始数据层）、`TimelineEvent`（带 `confidence`）、`EvidenceWarning`、`Biography`（展示层，只引用事件 ID）。
+- 严格镜像规则（Phase 0.5 收口）：所有 TS 联合类型在 Python 侧用 `Enum`（`str, Enum`）表达，
+  **不得退化为任意字符串**，且必须有运行时校验。已约束：`SaveKind`、`Encoding`、
+  `RelationshipType`（`RelationshipPeriod.type`）、`WarRole`（`WarParticipation.role`）、
+  `FactCheckStatus`（`FactCheckResult.status`）、`SaveInspection.encoding`。
+- 核心类型：`CharacterProfile`（原始数据层）、`TimelineEvent`（带 `confidence` 与 `evidence: EvidenceRef[]`）、
+  `EvidenceWarning`、`Biography`（展示层，只引用事件 ID）。
+- 人物索引/档案分离：`ParsedSave.characterIndex`（`CharacterSummary[]` 轻量摘要）与
+  `ParsedSave.profiles`（`Record<id, CharacterProfile>` 按需完整档案）分开，避免大型存档一次性生成全部完整 Profile。
+- Mock 隔离：测试/Mock 数据必须用 `FixtureEnvelope<T>` 包裹（`isMock` / `source` / `schemaVersion` / `generatedFor` / `data`），
+  Mock 元数据不与真实业务模型（如 `CharacterProfile`）混合。
 - `confidence`：`confirmed` / `inferred` / `uncertain`。推断不得写成确定事实。
+- 契约测试：`packages/save-schema/py/tests/test_contract.py`（pytest）；TS 侧 `tsconfig.json` 严格模式 `tsc --strict --noEmit`。
+  修改契约后必须跑这两项验证。
 
 ## 5. 传记管线（详见 docs/biography-pipeline.md）
 
@@ -62,11 +73,12 @@
 - 真实存档 / 数据库 / 上传目录（`data/`、`*.ck3` 等）已被 `.gitignore` 忽略，不提交。
 - `.env` 被忽略；`.env.example` 不含真实密钥。
 
-## 7. 当前状态（Phase 0 完成）
+## 7. 当前状态（Phase 0.5 契约收口 + 1A 工程骨架 + 1B 纵向流程打磨 + 1C 视觉/响应式/无障碍/PWA 收尾 + 1C.1 验收修复，均已完成）
 
-已建立：数据契约、四份 docs、`.env.example`、`.gitignore`、README、AGENTS、fixtures/mock 契约。
-未建立：前端/后端骨架（Phase 1/2）、TS 编译环境（Phase 1 补齐）。
-下一轮见 `docs/roadmap.md` 的 Phase 1。
+已建立：数据契约（TS+Python 严格同步 + 契约测试）、四份 docs、`.env.example`、`.gitignore`、README、AGENTS、fixtures/mock 契约、TS 严格类型检查环境、前端工程骨架 `apps/web`（Vite+React+TS strict+Tailwind+Zustand+Framer Motion+PWA 安全缓存）；可运行的 Mock 纵向链路（选择页→传记页→时间线↔证据面板双向同步）；索引/档案按需加载；`validateProfileEnvelope` 运行时校验；基于 History API 的可靠路由；`MockParseService` 确定性解析状态机；东方数字史馆设计语言（通道化 Design Token + 共享组件库 + 四页面改造）；键盘可达性（skip-link / 焦点管理 / 44px 触控）、移动端单栏重排、Framer Motion `MotionConfig reducedMotion="user"` + CSS 媒体查询双重 reduced-motion；加载竞态修复（按人物的 `profileRequestStateById` + `requestId`）；`/design-lab` 视觉实验室；PWA 缓存策略纯函数 `swCachePolicy.ts`；ESLint 8 链路（`npm run lint` / `lint:fix`）；Vitest 前端测试 96 项（含 `BiographyPage.test.tsx` 12 项、`swHandler.test.ts` 13 项）。
+**Phase 1C.1 收口**：东方素材 WebP 化（PNG 约 6.49 MB → WebP 约 1.11 MB，CSS `image-set` 回退）+ 移出 4 张参考图至 `docs/design-reference/`（不进 `dist`/`git`）；`ParsePage` 移除 eslint-disable 改 `useCallback` 并修 `exhaustive-deps`（`npm run lint` 零错误零警告）；`docs/ASSET_AUDIT.md` 素材审计表；经用户授权推送到公开远端。
+未建立：后端骨架（Phase 2）、真实解析/LLM、家族树/地点/导出（Phase 4）。
+下一轮见 `docs/roadmap.md` 的 Phase 2。
 
 ## 8. 沟通风格
 

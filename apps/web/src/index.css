@@ -1,0 +1,146 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+
+  /* ── 宣纸 / 墨色 ── */
+  --paper-50: 250 245 234;
+  --paper-100: 241 230 210;
+  --paper-200: 226 209 181;
+
+  --ink-950: 30 23 19;
+  --ink-800: 51 39 33;
+  --ink-600: 101 86 74;
+  --ink-400: 145 130 117;
+
+  /* ── 朱砂 ── */
+  --cinnabar-800: 116 28 23;
+  --cinnabar-700: 146 39 31;
+  --cinnabar-600: 173 56 45;
+
+  /* ── 旧金 ── */
+  --gold-700: 140 103 46;
+  --gold-500: 182 138 66;
+  --gold-300: 215 185 118;
+
+  /* ── 玉色（确认） ── */
+  --jade-700: 66 100 91;
+  --jade-500: 101 134 123;
+
+  /* ── 靛青（推断） ── */
+  --indigo-700: 46 74 130;
+  --indigo-500: 60 90 154;
+
+  /* ── 置信度语义 + 错误（不仅靠颜色，组件另配图标/形状） ── */
+  --confidence-confirmed: 66 100 91;
+  --confidence-inferred: 46 74 130;
+  --confidence-uncertain: 176 96 42;
+  --color-error: 146 39 31;
+
+  /* ── 动效令牌 ── */
+  --motion-fast: 160ms;
+  --motion-normal: 320ms;
+  --motion-slow: 560ms;
+  --motion-ceremonial: 800ms;
+  --ease-soft: ease-out;
+  --ease-page: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-seal: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: rgb(var(--paper-100));
+  color: rgb(var(--ink-950));
+  font-family: "PingFang SC", "Microsoft YaHei", "Source Han Sans SC",
+    system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 克制的滚动条，贴合宣纸主题 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--ink-400)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--ink-400) / 0.55);
+  border-radius: 4px;
+}
+
+/* 全局焦点可见：旧金描边（无障碍） */
+:focus-visible {
+  outline: 2px solid rgb(var(--gold-500));
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* 跳转主内容链接（无障碍） */
+.skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: -3.5rem;
+  z-index: 60;
+  padding: 0.5rem 0.875rem;
+  background: rgb(var(--ink-950));
+  color: rgb(var(--paper-50));
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  transition: top var(--motion-fast) var(--ease-soft);
+}
+.skip-link:focus {
+  top: 0.75rem;
+}
+
+/* 刘海屏安全区 */
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@layer utilities {
+  /* 极淡宣纸纹理（装饰，透明度由调用处控制，缺失时不阻塞）
+     大图走 image-set：优先 WebP（约 -96%），不支持时回退 PNG。 */
+  .paper-grain {
+    background-image: image-set(
+      url("/assets/oriental/paper-texture.webp") type("image/webp"),
+      url("/assets/oriental/paper-texture.png") type("image/png")
+    );
+    background-size: 460px 460px;
+    background-repeat: repeat;
+  }
+  /* 起始页山水/舆图背景（装饰） */
+  .hero-mountain {
+    background-image: image-set(
+      url("/assets/oriental/oriental-hero-bg.webp") type("image/webp"),
+      url("/assets/oriental/oriental-hero-bg.png") type("image/png")
+    );
+    background-size: cover;
+    background-position: center;
+  }
+}
+
+/* reduced-motion：取消 CSS 动画/过渡/平滑滚动（Framer 动画由 MotionConfig 处理） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

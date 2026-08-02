@@ -36,11 +36,15 @@ data/
 .coverage
 htmlcov/
 coverage/
+*.log
+apps/web/vt.log
+
+# ---- 设计参考素材（大图，仅本地参考，不进版本库） ----
+docs/design-reference/
 
 # ---- 系统 ----
 .DS_Store
 Thumbs.db
 
-# ---- PWA 构建产物 ----
-apps/web/public/sw.js
+# ---- PWA 构建产物（sw.js 是源码，须随仓库发布；dist 才是构建产物） ----
 apps/web/dist/

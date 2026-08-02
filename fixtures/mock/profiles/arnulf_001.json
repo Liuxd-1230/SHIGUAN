@@ -1,0 +1,490 @@
+{
+  "isMock": true,
+  "source": "fixtures/mock",
+  "schemaVersion": "0.5.0",
+  "generatedFor": "phase-1b-demo",
+  "data": {
+    "id": "arnulf_001",
+    "name": "阿努尔夫",
+    "sex": "male",
+    "birthDate": "1032.04.12",
+    "deathDate": "1098.11.03",
+    "deathReason": "年老辞世",
+    "dynasty": {
+      "id": "dyn_hohenwerth",
+      "name": "霍恩韦尔特王朝",
+      "type": "dynasty",
+      "sourcePath": null
+    },
+    "house": {
+      "id": "hou_werth",
+      "name": "韦尔特家族",
+      "type": "house",
+      "sourcePath": null
+    },
+    "culture": {
+      "id": "culture_franconian",
+      "name": "法兰克尼亚文化",
+      "type": "culture",
+      "sourcePath": null
+    },
+    "faith": {
+      "id": "faith_catholic",
+      "name": "天主教",
+      "type": "faith",
+      "sourcePath": null
+    },
+    "traits": [
+      {
+        "id": "trait_brave",
+        "name": "勇敢",
+        "category": "personality",
+        "sourcePath": null
+      },
+      {
+        "id": "trait_ambitious",
+        "name": "野心勃勃",
+        "category": "personality",
+        "sourcePath": null
+      },
+      {
+        "id": "trait_fertile",
+        "name": "多产",
+        "category": "health",
+        "sourcePath": null
+      }
+    ],
+    "titles": [
+      {
+        "titleId": "c_ostmark",
+        "name": "东边疆区",
+        "tier": "county",
+        "start": "1058.03.10",
+        "end": "1071.06.20",
+        "isCurrent": false,
+        "government": "feudal",
+        "sourcePath": null
+      },
+      {
+        "titleId": "d_werth",
+        "name": "韦尔特公国",
+        "tier": "duchy",
+        "start": "1065.01.01",
+        "end": null,
+        "isCurrent": true,
+        "government": "feudal",
+        "sourcePath": null
+      },
+      {
+        "titleId": "k_francia",
+        "name": "法兰克王国",
+        "tier": "kingdom",
+        "start": "1088.09.01",
+        "end": "1094.02.15",
+        "isCurrent": false,
+        "government": "feudal",
+        "sourcePath": null
+      }
+    ],
+    "residences": [
+      {
+        "locationId": "b_werth_castle",
+        "name": "韦尔特城堡",
+        "start": "1065.01.01",
+        "end": null,
+        "confidence": "confirmed",
+        "sourcePath": "character/arnulf/capital"
+      },
+      {
+        "locationId": "c_ostmark",
+        "name": "东边疆区首府",
+        "start": "1058.03.10",
+        "end": "1071.06.20",
+        "confidence": "inferred",
+        "sourcePath": "character/arnulf/title/c_ostmark"
+      }
+    ],
+    "courtPositions": [
+      {
+        "courtId": "k_francia",
+        "courtName": "法兰克宫廷",
+        "positionId": "pos_spymaster",
+        "name": "间谍大师",
+        "start": "1089.01.01",
+        "end": "1092.12.31",
+        "employerId": "arnulf_001",
+        "sourcePath": null
+      }
+    ],
+    "parents": [
+      {
+        "id": "folker",
+        "name": "福尔克尔",
+        "sex": "male",
+        "birthDate": "1005.02.01",
+        "deathDate": "1070.08.19",
+        "dynasty": {
+          "id": "dyn_hohenwerth",
+          "name": "霍恩韦尔特王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "primaryTitle": {
+          "id": "d_werth",
+          "name": "韦尔特公国",
+          "type": "title",
+          "sourcePath": null
+        }
+      }
+    ],
+    "spouses": [
+      {
+        "characterId": "gertrude",
+        "name": "格特鲁德",
+        "type": "spouse",
+        "start": "1055.06.20",
+        "end": "1077.04.10",
+        "confidence": "confirmed",
+        "sourcePath": null
+      },
+      {
+        "characterId": "beatrix",
+        "name": "贝亚特丽克丝",
+        "type": "spouse",
+        "start": "1079.08.15",
+        "end": null,
+        "confidence": "confirmed",
+        "sourcePath": null
+      }
+    ],
+    "children": [
+      {
+        "id": "heinrich",
+        "name": "海因里希",
+        "sex": "male",
+        "birthDate": "1057.05.30",
+        "deathDate": null,
+        "dynasty": {
+          "id": "dyn_hohenwerth",
+          "name": "霍恩韦尔特王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "primaryTitle": {
+          "id": "d_werth",
+          "name": "韦尔特公国",
+          "type": "title",
+          "sourcePath": null
+        }
+      },
+      {
+        "id": "elisabeth",
+        "name": "伊丽莎白",
+        "sex": "female",
+        "birthDate": "1061.09.12",
+        "deathDate": null,
+        "dynasty": {
+          "id": "dyn_hohenwerth",
+          "name": "霍恩韦尔特王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "primaryTitle": null
+      }
+    ],
+    "siblings": [
+      {
+        "id": "konrad",
+        "name": "康拉德",
+        "sex": "male",
+        "birthDate": "1035.01.10",
+        "deathDate": "1081.03.02",
+        "dynasty": {
+          "id": "dyn_hohenwerth",
+          "name": "霍恩韦尔特王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "primaryTitle": null
+      }
+    ],
+    "friends": [
+      {
+        "id": "bishopsieg",
+        "name": "西格主教",
+        "sex": "male",
+        "birthDate": "1028.11.01",
+        "deathDate": null,
+        "dynasty": null,
+        "primaryTitle": null
+      }
+    ],
+    "rivals": [
+      {
+        "id": "duke_otto",
+        "name": "奥托公爵",
+        "sex": "male",
+        "birthDate": "1030.06.06",
+        "deathDate": null,
+        "dynasty": {
+          "id": "dyn_neighbour",
+          "name": "邻邦王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "primaryTitle": null
+      }
+    ],
+    "lovers": [],
+    "wars": [
+      {
+        "warId": "war_001",
+        "name": "继承战争",
+        "role": "attacker",
+        "side": "attacker",
+        "start": "1088.03.01",
+        "end": "1090.11.01",
+        "outcome": "胜利",
+        "sourcePath": "war/war_001"
+      },
+      {
+        "warId": "war_002",
+        "name": "边境冲突",
+        "role": "defender",
+        "side": "defender",
+        "start": "1093.05.01",
+        "end": "1094.02.15",
+        "outcome": "失利",
+        "sourcePath": "war/war_002"
+      }
+    ],
+    "imprisonments": [],
+    "travels": [
+      {
+        "id": "tr_pilgrimage",
+        "type": "travel",
+        "date": "1072.04.01",
+        "description": "疑似前往罗马朝圣（具体行程存疑）。",
+        "relatedCharacters": [],
+        "location": null,
+        "confidence": "uncertain",
+        "sourcePath": "memory/arnulf/3"
+      }
+    ],
+    "memories": [
+      {
+        "id": "mem_crown",
+        "type": "success",
+        "date": "1088.09.01",
+        "description": "加冕之夜的记忆：钟声与欢呼。",
+        "relatedCharacters": [],
+        "location": null,
+        "confidence": "inferred",
+        "sourcePath": "memory/arnulf/1"
+      }
+    ],
+    "timeline": [
+      {
+        "id": "ev_birth",
+        "date": "1032.04.12",
+        "endDate": null,
+        "type": "birth",
+        "title": "诞生于韦尔特",
+        "description": "阿努尔夫生于法兰克尼亚的韦尔特城堡，为福尔克尔长子。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_birth",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/birth",
+            "rawKey": "birth",
+            "description": "人物块记录出生日期与父亲",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_marry1",
+        "date": "1055.06.20",
+        "endDate": null,
+        "type": "marriage",
+        "title": "与格特鲁德联姻",
+        "description": "为巩固东方边疆，阿努尔夫迎娶格特鲁德。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_marry1",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/spouse/0",
+            "rawKey": "spouse",
+            "description": "配偶关系块记录",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_title_duchy",
+        "date": "1065.01.01",
+        "endDate": null,
+        "type": "title_gain",
+        "title": "继承韦尔特公国",
+        "description": "父亲去世后，阿努尔夫继承韦尔特公国，成为一方诸侯。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_duchy",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/title/d_werth",
+            "rawKey": "d_werth",
+            "description": "头衔持有块",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_child1",
+        "date": "1057.05.30",
+        "endDate": null,
+        "type": "child_birth",
+        "title": "长子海因里希出生",
+        "description": "与格特鲁德的长子海因里希降生。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_child1",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/children/0",
+            "rawKey": null,
+            "description": "子女关系块",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_war1",
+        "date": "1088.03.01",
+        "endDate": null,
+        "type": "war",
+        "title": "发动继承战争",
+        "description": "为争夺法兰克王位，阿努尔夫以进攻方身份卷入继承战争。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_war1",
+            "sourceType": "war",
+            "sourcePath": "war/war_001/participants",
+            "rawKey": "war_001",
+            "description": "战争参与块记录为 attacker",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_king",
+        "date": "1088.09.01",
+        "endDate": null,
+        "type": "succession",
+        "title": "加冕为法兰克国王",
+        "description": "继承战争胜利后，阿努尔夫短暂戴上法兰克王冠。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_king",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/title/k_francia",
+            "rawKey": "k_francia",
+            "description": "头衔持有块（王国）",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_king_lost",
+        "date": "1094.02.15",
+        "endDate": null,
+        "type": "title_loss",
+        "title": "失去法兰克王位",
+        "description": "因联盟瓦解，阿努尔夫被迫放弃王冠，退回公国。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_king_lost",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/title/k_francia/end",
+            "rawKey": null,
+            "description": "头衔结束日期",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "ev_death",
+        "date": "1098.11.03",
+        "endDate": null,
+        "type": "death",
+        "title": "于韦尔特辞世",
+        "description": "阿努尔夫在韦尔特城堡安然离世，享年六十六。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "e_death",
+            "sourceType": "save_block",
+            "sourcePath": "character/arnulf/death",
+            "rawKey": "death",
+            "description": "人物死亡日期与死因",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      }
+    ],
+    "evidenceWarnings": [
+      {
+        "code": "uncertain_travel",
+        "message": "朝圣行程无明确记录，标记为不确定。",
+        "severity": "info",
+        "relatedEventId": "tr_pilgrimage",
+        "sourcePath": "memory/arnulf/3"
+      }
+    ]
+  }
+}

@@ -185,6 +185,26 @@ export interface LifeEvent {
 // ----------------------------------------------------------------------------
 
 /**
+ * 一条可溯源的证据引用。
+ * 用于把 TimelineEvent 关联到存档中的具体出处（而非复制整段原始存档文本）。
+ * confirmed 事件必须能追到具体证据；inferred 事件需记录推断依据。
+ */
+export interface EvidenceRef {
+  id: string;
+  /** 证据来源类别，如 "save_block" | "localization" | "memory" | "war" | "title"。 */
+  sourceType: string;
+  /** 在解析后存档数据中的来源路径，用于"史料依据"面板回溯。 */
+  sourcePath?: string;
+  /** 存档中的原始 key（如本地化 key、Clausewitz 对象键），便于精确溯源。 */
+  rawKey?: string;
+  /** 该证据说明了什么。 */
+  description: string;
+  confidence: Confidence;
+  /** 关联的时间线事件 id（若此证据本身对应某个事件）。 */
+  relatedEventId?: string;
+}
+
+/**
  * 统一的人生时间线事件。所有进入传记的事实都必须先成为 TimelineEvent。
  * `confidence` 决定它在 UI 中如何呈现，以及模型是否可将其当作确定事实。
  */
@@ -201,6 +221,8 @@ export interface TimelineEvent {
   /** 在解析后存档数据中的来源路径，用于"史料依据"面板。 */
   sourcePath?: string;
   confidence: Confidence;
+  /** 可溯源的证据引用集合（至少能关联一条 EvidenceRef）。 */
+  evidence: EvidenceRef[];
 }
 
 // ----------------------------------------------------------------------------
@@ -267,6 +289,33 @@ export interface CharacterProfile {
   /** 证据层面的告警与不确定项。 */
   evidenceWarnings: EvidenceWarning[];
 }
+
+/**
+ * 人物列表摘要（用于人物选择页），由完整档案按需派生。
+ * 只保留卡片/列表渲染所需的轻量字段，避免大型存档一次性生成全部完整档案。
+ * 完整档案通过 ParsedSave.profiles 按 id 按需获取。
+ */
+export interface CharacterSummary {
+  id: string;
+  name: string;
+  sex?: Sex;
+  birthDate?: string;
+  deathDate?: string;
+  dynasty?: EntityRef;
+  house?: EntityRef;
+  culture?: EntityRef;
+  faith?: EntityRef;
+  primaryTitle?: EntityRef;
+  highestTitleTier?: TitleTier;
+  isRuler: boolean;
+  isAlive: boolean;
+  isPlayerDynasty: boolean;
+  portraitKey?: string;
+  evidenceWarningCount: number;
+}
+
+/** 索引条目与摘要同形。 */
+export type CharacterIndexEntry = CharacterSummary;
 
 // ----------------------------------------------------------------------------
 // 传记展示层（模型生成，引用上面的事件 ID）
@@ -344,12 +393,21 @@ export type SaveKind =
   | "binary" // 自动存档的未压缩二进制 gamestate
   | "ironman"; // 铁人存档（二进制 + 需要令牌表才能解码）
 
+/** 文本编码（CK3 使用 UTF-8，与 EU4 的 Windows-1252 不同）。 */
+export type Encoding = "utf-8" | "windows-1252" | "unknown";
+
+/** 缺失的外部解析组件（如 Rakaly CLI）及其安装提示。 */
+export interface MissingComponent {
+  name: string;
+  hint: string;
+}
+
 /** 文件初检结果。由 SaveParserAdapter.inspect() 产出，绝不解析内容本身。 */
 export interface SaveInspection {
   path: string;
   kind: SaveKind;
   /** 编码：CK3 使用 UTF-8（与 EU4 的 Windows-1252 不同）。 */
-  encoding: "utf-8" | "windows-1252" | "unknown";
+  encoding: Encoding;
   sizeBytes: number;
   isCompressed: boolean;
   isIronman: boolean;
@@ -358,22 +416,28 @@ export interface SaveInspection {
   /** 是否需要外部解析器（如 Rakaly CLI）。 */
   needsExternal: boolean;
   /** 缺失的外部组件名称与安装提示（若有）。 */
-  missingComponent?: {
-    name: string;
-    hint: string;
-  };
+  missingComponent?: MissingComponent;
 }
 
-/** 解析后的存档索引。Phase 2 起逐步填充，Phase 0 仅定义形状。 */
+/** 解析后存档的元信息。 */
+export interface ParsedSaveMeta {
+  saveVersion?: string;
+  gameVersion?: string;
+  date?: string;
+  playerId?: string;
+  campaignId?: string;
+}
+
+/** 解析后的存档索引与人物档案。 */
 export interface ParsedSave {
-  meta: {
-    saveVersion?: string;
-    gameVersion?: string;
-    date?: string;
-    playerId?: string;
-    campaignId?: string;
-  };
-  characters: Record<string, CharacterProfile>;
+  meta: ParsedSaveMeta;
+  /**
+   * 人物摘要索引（轻量，用于选择页）。与 profiles 分离，
+   * 避免大型存档一次性生成全部完整 CharacterProfile。
+   */
+  characterIndex: CharacterIndexEntry[];
+  /** 按需完整档案，按人物 id 取用。 */
+  profiles: Record<string, CharacterProfile>;
   dynasties: Record<string, EntityRef>;
   houses: Record<string, EntityRef>;
   titles: Record<string, EntityRef>;
@@ -385,4 +449,44 @@ export interface ParsedSave {
   memories: LifeEvent[];
   /** 本地化文本表：key -> 可读名称。 */
   localization: Record<string, string>;
+}
+
+// ----------------------------------------------------------------------------
+// Mock / 测试数据包裹层
+// ----------------------------------------------------------------------------
+
+/** FixtureEnvelope 的默认 data 载体：一组 Mock 人物摘要与按需档案。 */
+export interface MockDataset {
+  characterIndex: CharacterIndexEntry[];
+  profiles: Record<string, CharacterProfile>;
+  /** 其余索引数据（dynasties/houses/...）按需扩展。 */
+  extra?: Record<string, unknown>;
+}
+
+/**
+ * 索引包的 data 载体（Phase 1B 起用于真正的"按需加载"）。
+ * 只携带轻量摘要与档案定位符（profileIds），**不**内联完整 CharacterProfile，
+ * 避免大型存档初始化时一次性把所有完整档案打进 bundle。
+ */
+export interface MockIndexPayload {
+  meta: ParsedSaveMeta;
+  characterIndex: CharacterIndexEntry[];
+  /** 可选完整档案的文件定位符（与 profiles/<id>.json 对应）。 */
+  profileIds: string[];
+}
+
+/** 索引包类型：FixtureEnvelope<MockIndexPayload>。 */
+export type MockIndex = FixtureEnvelope<MockIndexPayload>;
+
+/**
+ * Mock / 测试数据的包裹结构。
+ * 元数据（isMock / source / schemaVersion / generatedFor）与真实业务模型隔离：
+ * 真实 CharacterProfile 等不携带这些字段，避免污染。
+ */
+export interface FixtureEnvelope<T> {
+  isMock: true;
+  source: "fixtures/mock";
+  schemaVersion: string;
+  generatedFor: string;
+  data: T;
 }

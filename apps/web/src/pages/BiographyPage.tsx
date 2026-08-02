@@ -1,0 +1,347 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { motion } from "framer-motion";
+import { useStore, IDLE_REQUEST } from "../store";
+import { useRoute, navigate, ROUTES } from "../lib/router";
+import { buildDraft, eventChapterMap } from "../lib/buildOutline";
+import Timeline, { TimelineDensity } from "../components/Timeline";
+import EvidencePanel from "../components/EvidencePanel";
+import PortraitFrame from "../components/PortraitFrame";
+import MuseumSurface from "../components/MuseumSurface";
+import ScrollPanel from "../components/ScrollPanel";
+import SealButton from "../components/SealButton";
+import InkDivider from "../components/InkDivider";
+import { ChevronLeft } from "../components/icons";
+import { cn } from "../lib/cn";
+
+function lifeSpan(birth?: string, death?: string, alive?: boolean): string {
+  const b = birth ? birth.split(".")[0] : "生年不详";
+  const d = death ? death.split(".")[0] : alive ? "在世" : "卒年不详";
+  return `${b} – ${d}`;
+}
+
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+function isDesktop(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(min-width: 1024px)").matches
+  );
+}
+
+// 滚动锁定：点击时间线触发自动滚动期间，忽略 IntersectionObserver 的更新，
+// 避免高亮在平滑滚动过程中反复跳动。
+const SCROLL_LOCK_MS = 700;
+
+export default function BiographyPage() {
+  const route = useRoute();
+  const characterId = route.params.characterId ?? null;
+
+  const characterIndex = useStore((s) => s.characterIndex);
+  const indexLoaded = useStore((s) => s.indexLoaded);
+  const profileCache = useStore((s) => s.profileCache);
+  const reqState = useStore((s) =>
+    characterId ? s.profileRequestStateById[characterId] ?? IDLE_REQUEST : IDLE_REQUEST,
+  );
+  const loadProfile = useStore((s) => s.loadProfile);
+  const clearProfileRequest = useStore((s) => s.clearProfileRequest);
+
+  const profile = characterId ? profileCache[characterId] : undefined;
+  const summary = useMemo(
+    () => characterIndex.find((c) => c.id === characterId),
+    [characterIndex, characterId],
+  );
+
+  // 载入完整档案（真正的按需取档）。仅当该人物处于 idle（且未缓存）时触发，
+  // 成功态命中缓存不再访问仓库；错误态由"重试"按钮显式触发，避免自动重试死循环。
+  useEffect(() => {
+    if (!characterId) return;
+    if (!summary) return; // 索引中不存在该人物：无需取档（由 NotFound 处理）
+    if (reqState.status !== "idle") return;
+    if (profileCache[characterId]) return;
+    loadProfile(characterId);
+  }, [characterId, summary, reqState.status, profileCache, loadProfile]);
+
+  const draft = useMemo(
+    () => (profile ? buildDraft(profile) : null),
+    [profile],
+  );
+  const map = useMemo(
+    () => (draft ? eventChapterMap(draft.chapters) : {}),
+    [draft],
+  );
+
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
+  const [density, setDensity] = useState<TimelineDensity>("all");
+
+  const lockUntilRef = useRef(0);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // 档案就绪后，默认选中首条事件
+  useEffect(() => {
+    if (profile && profile.timeline.length > 0) {
+      const first = profile.timeline[0].id;
+      setActiveEventId(first);
+      setActiveChapterId(map[first] ?? null);
+    }
+  }, [profile, map]);
+
+  // 双向联动：IntersectionObserver 监测章节进入视口，更新当前章节
+  useEffect(() => {
+    if (!draft) return;
+    const root = containerRef.current;
+    if (!root || typeof IntersectionObserver === "undefined") return;
+
+    const elements = draft.chapters
+      .map((ch) => root.querySelector<HTMLElement>(`#chapter-${ch.id}`))
+      .filter((el): el is HTMLElement => el !== null);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (performance.now() < lockUntilRef.current) return; // 滚动锁定期间忽略
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        if (visible.length === 0) return;
+        const id = visible[0].target.id.replace(/^chapter-/, "");
+        setActiveChapterId(id);
+        const firstEvent = draft.chapters.find((c) => c.id === id)?.eventIds[0];
+        if (firstEvent) setActiveEventId(firstEvent);
+      },
+      { rootMargin: "-20% 0px -60% 0px", threshold: [0, 0.25, 0.5, 1] },
+    );
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [draft]);
+
+  function selectEvent(id: string) {
+    setActiveEventId(id);
+    const ch = map[id];
+    if (ch) setActiveChapterId(ch);
+    // 仅在桌面且未要求减弱动效时，自动滚动到对应章节
+    if (!prefersReducedMotion() && isDesktop()) {
+      lockUntilRef.current = performance.now() + SCROLL_LOCK_MS;
+      document
+        .getElementById(`chapter-${map[id]}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  // —— 边界状态 ——
+  if (!indexLoaded) {
+    return (
+      <div
+        className="mx-auto max-w-2xl px-5 py-12 text-ink-600"
+        role="status"
+        aria-live="polite"
+      >
+        正在载入人物索引…
+      </div>
+    );
+  }
+  if (characterId && !summary) {
+    return <NotFound characterId={characterId} />;
+  }
+  if (reqState.status === "loading") {
+    return (
+      <div
+        className="mx-auto max-w-2xl px-5 py-12 text-ink-600"
+        role="status"
+        aria-live="polite"
+      >
+        正在载入「{characterId}」的完整档案…
+      </div>
+    );
+  }
+  if (reqState.status === "error") {
+    return (
+      <div className="mx-auto max-w-2xl px-5 py-12" role="alert">
+        <MuseumSurface variant="raised" className="p-5">
+          <p className="font-medium text-cinnabar-700">档案载入失败</p>
+          <p className="mt-2 break-words text-sm text-ink-700">
+            {reqState.error}
+          </p>
+          <div className="mt-4 flex gap-2">
+            <SealButton
+              variant="primary"
+              seal
+              onClick={() => {
+                if (characterId) {
+                  clearProfileRequest(characterId);
+                  loadProfile(characterId);
+                }
+              }}
+            >
+              重试载入
+            </SealButton>
+            <SealButton
+              variant="ghost"
+              onClick={() => navigate(ROUTES.characters)}
+            >
+              返回选择页
+            </SealButton>
+          </div>
+        </MuseumSurface>
+      </div>
+    );
+  }
+  if (!profile || !draft) {
+    return (
+      <div className="mx-auto max-w-2xl px-5 py-12 text-ink-600">
+        未找到该人物档案。请返回选择页。
+      </div>
+    );
+  }
+
+  const activeChapterEventIds = new Set(
+    draft.chapters.find((c) => c.id === activeChapterId)?.eventIds ?? [],
+  );
+  const activeEvent = profile.timeline.find((e) => e.id === activeEventId);
+
+  return (
+    <div className="mx-auto max-w-6xl px-5 py-8" ref={containerRef}>
+      <SealButton
+        variant="ghost"
+        className="mb-3 -ml-2"
+        onClick={() => navigate(ROUTES.characters)}
+        aria-label="返回选择页"
+      >
+        <ChevronLeft size={16} />
+        返回选择页
+      </SealButton>
+
+      <MuseumSurface variant="raised" className="p-5 sm:p-6">
+        <div className="flex items-start gap-4">
+          <PortraitFrame
+            name={profile.name}
+            cultureLabel={profile.culture?.name}
+            size={84}
+          />
+          <div className="min-w-0">
+            <h1 className="font-serif text-3xl font-bold text-ink-950">
+              {profile.name}
+            </h1>
+            <p className="mt-1 text-ink-600">
+              {summary?.primaryTitle?.name ?? "无头衔"}
+              {summary?.dynasty && <span> · {summary.dynasty.name}</span>}
+              {summary && (
+                <span>
+                  {" "}
+                  · {lifeSpan(summary.birthDate, summary.deathDate, summary.isAlive)}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+      </MuseumSurface>
+
+      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* 时间线 + 密度控制（移动端排正文之后） */}
+        <section className="order-2 lg:order-1">
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <span className="text-ink-500">密度</span>
+            {(["all", "key"] as TimelineDensity[]).map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setDensity(d)}
+                aria-pressed={density === d}
+                className={cn(
+                  "min-h-[2.25rem] rounded border px-2 py-0.5 transition-colors",
+                  density === d
+                    ? "border-cinnabar-700/60 text-cinnabar-700"
+                    : "border-ink-400/50 text-ink-500 hover:text-ink-900",
+                )}
+              >
+                {d === "all" ? "全部事件" : "关键事件"}
+              </button>
+            ))}
+          </div>
+          <Timeline
+            events={profile.timeline}
+            activeId={activeEventId}
+            activeChapterEventIds={activeChapterEventIds}
+            onSelect={selectEvent}
+            density={density}
+          />
+        </section>
+
+        {/* 传记正文（移动端置顶） */}
+        <section className="order-1 lg:order-2">
+          <div className="mb-3">
+            <h2 className="font-serif text-lg font-bold text-ink-900">传记</h2>
+            <p className="mt-1 text-xs text-ink-500">
+              传记草稿（由存档数据自动整理，非 AI 生成）
+            </p>
+          </div>
+          <div className="space-y-5">
+            {draft.chapters.map((ch) => {
+              const active = ch.id === activeChapterId;
+              return (
+                <motion.div
+                  key={ch.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true, margin: "-8% 0px -8% 0px" }}
+                  transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  <ScrollPanel
+                    as="article"
+                    id={`chapter-${ch.id}`}
+                    className={cn(
+                      "transition-colors",
+                      active && "ring-1 ring-cinnabar-700/40",
+                    )}
+                  >
+                    <h3 className="font-serif text-lg font-bold text-ink-900">
+                      {ch.title}
+                    </h3>
+                    <InkDivider className="my-3" animateInk />
+                    <p className="text-sm leading-relaxed text-ink-700">
+                      {ch.content}
+                    </p>
+                  </ScrollPanel>
+                </motion.div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* 史料依据面板 */}
+        <section className="order-3 lg:order-3">
+          <MuseumSurface variant="inset" className="p-4">
+            <EvidencePanel
+              event={activeEvent}
+              warnings={profile.evidenceWarnings}
+            />
+          </MuseumSurface>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function NotFound({ characterId }: { characterId: string }) {
+  return (
+    <div className="mx-auto max-w-2xl px-5 py-12">
+      <MuseumSurface variant="raised" className="p-5">
+        <p className="font-medium text-ink-900">未找到该人物</p>
+        <p className="mt-2 text-sm text-ink-700">
+          存档索引中没有 ID 为「{characterId}」的人物。该人物可能不存在，或档案尚未生成。
+        </p>
+        <SealButton
+          variant="ghost"
+          className="mt-4"
+          onClick={() => navigate(ROUTES.characters)}
+        >
+          返回选择页
+        </SealButton>
+      </MuseumSurface>
+    </div>
+  );
+}

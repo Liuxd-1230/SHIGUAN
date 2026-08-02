@@ -1,0 +1,163 @@
+{
+  "isMock": true,
+  "source": "fixtures/mock",
+  "schemaVersion": "0.5.0",
+  "generatedFor": "phase-1b-demo",
+  "data": {
+    "id": "lowborn_002",
+    "name": "玛蒂尔达",
+    "sex": "female",
+    "birthDate": "1041.07.02",
+    "deathDate": null,
+    "deathReason": null,
+    "dynasty": null,
+    "house": null,
+    "culture": {
+      "id": "culture_franconian",
+      "name": "法兰克尼亚文化",
+      "type": "culture",
+      "sourcePath": null
+    },
+    "faith": {
+      "id": "faith_catholic",
+      "name": "天主教",
+      "type": "faith",
+      "sourcePath": null
+    },
+    "traits": [
+      {
+        "id": "trait_content",
+        "name": "知足",
+        "category": "personality",
+        "sourcePath": null
+      }
+    ],
+    "titles": [],
+    "residences": [
+      {
+        "locationId": "b_small_holding",
+        "name": "小农庄",
+        "start": "1060.01.01",
+        "end": null,
+        "confidence": "inferred",
+        "sourcePath": "character/lowborn/residence"
+      }
+    ],
+    "courtPositions": [],
+    "parents": [],
+    "spouses": [],
+    "children": [
+      {
+        "id": "lowborn_child",
+        "name": "小玛蒂尔达",
+        "sex": "female",
+        "birthDate": "1068.02.14",
+        "deathDate": null,
+        "dynasty": null,
+        "primaryTitle": null
+      }
+    ],
+    "siblings": [],
+    "friends": [],
+    "rivals": [],
+    "lovers": [],
+    "wars": [],
+    "imprisonments": [],
+    "travels": [
+      {
+        "id": "tr_move",
+        "type": "travel",
+        "date": "1062.03.01",
+        "description": "疑似迁居，无确证。",
+        "relatedCharacters": [],
+        "location": null,
+        "confidence": "uncertain",
+        "sourcePath": "memory/lowborn/2"
+      }
+    ],
+    "memories": [],
+    "timeline": [
+      {
+        "id": "lb_birth",
+        "date": "1041.07.02",
+        "endDate": null,
+        "type": "birth",
+        "title": "生于农庄",
+        "description": "玛蒂尔达出生于一处无名小农庄，父母姓名失载。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "confirmed",
+        "evidence": [
+          {
+            "id": "lb_b",
+            "sourceType": "save_block",
+            "sourcePath": "character/lowborn/birth",
+            "rawKey": "birth",
+            "description": "人物块记录出生",
+            "confidence": "confirmed",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "lb_travel",
+        "date": "1062.03.01",
+        "endDate": null,
+        "type": "travel",
+        "title": "疑似迁居城镇",
+        "description": "约公元 1062 年，可能迁居邻近城镇谋生，行程无确证。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "uncertain",
+        "evidence": [
+          {
+            "id": "lb_t",
+            "sourceType": "memory",
+            "sourcePath": "memory/lowborn/2",
+            "rawKey": null,
+            "description": "记忆片段，地点未证实",
+            "confidence": "uncertain",
+            "relatedEventId": null
+          }
+        ]
+      },
+      {
+        "id": "lb_child",
+        "date": "1068.02.14",
+        "endDate": null,
+        "type": "child_birth",
+        "title": "女儿出生",
+        "description": "玛蒂尔达的女儿降生，生父不详（由子女反推存在母亲）。",
+        "location": null,
+        "relatedCharacters": [],
+        "relatedTitles": [],
+        "sourcePath": null,
+        "confidence": "inferred",
+        "evidence": [
+          {
+            "id": "lb_c",
+            "sourceType": "save_block",
+            "sourcePath": "character/lowborn/children/0",
+            "rawKey": null,
+            "description": "子女关系块反推母亲",
+            "confidence": "inferred",
+            "relatedEventId": null
+          }
+        ]
+      }
+    ],
+    "evidenceWarnings": [
+      {
+        "code": "missing_localization",
+        "message": "该人物王朝/家族未经本地化，名称可能不准确。",
+        "severity": "warning",
+        "relatedEventId": null,
+        "sourcePath": "character/lowborn"
+      }
+    ]
+  }
+}

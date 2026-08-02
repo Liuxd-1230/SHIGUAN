@@ -1,0 +1,111 @@
+{
+  "isMock": true,
+  "source": "fixtures/mock",
+  "schemaVersion": "0.5.0",
+  "generatedFor": "phase-1b-demo",
+  "data": {
+    "meta": {
+      "saveVersion": "mock-1.0.0",
+      "gameVersion": "1.12.mock",
+      "date": "1098.01.01",
+      "playerId": "arnulf_001",
+      "campaignId": "mock-campaign"
+    },
+    "characterIndex": [
+      {
+        "id": "arnulf_001",
+        "name": "阿努尔夫",
+        "sex": "male",
+        "birthDate": "1032.04.12",
+        "deathDate": "1098.11.03",
+        "dynasty": {
+          "id": "dyn_hohenwerth",
+          "name": "霍恩韦尔特王朝",
+          "type": "dynasty",
+          "sourcePath": null
+        },
+        "house": {
+          "id": "hou_werth",
+          "name": "韦尔特家族",
+          "type": "house",
+          "sourcePath": null
+        },
+        "culture": {
+          "id": "culture_franconian",
+          "name": "法兰克尼亚文化",
+          "type": "culture",
+          "sourcePath": null
+        },
+        "faith": {
+          "id": "faith_catholic",
+          "name": "天主教",
+          "type": "faith",
+          "sourcePath": null
+        },
+        "primaryTitle": {
+          "id": "d_werth",
+          "name": "韦尔特公国",
+          "type": "title",
+          "sourcePath": null
+        },
+        "highestTitleTier": "kingdom",
+        "isRuler": true,
+        "isAlive": false,
+        "isPlayerDynasty": true,
+        "portraitKey": null,
+        "evidenceWarningCount": 1
+      },
+      {
+        "id": "lowborn_002",
+        "name": "玛蒂尔达",
+        "sex": "female",
+        "birthDate": "1041.07.02",
+        "deathDate": null,
+        "dynasty": null,
+        "house": null,
+        "culture": {
+          "id": "culture_franconian",
+          "name": "法兰克尼亚文化",
+          "type": "culture",
+          "sourcePath": null
+        },
+        "faith": {
+          "id": "faith_catholic",
+          "name": "天主教",
+          "type": "faith",
+          "sourcePath": null
+        },
+        "primaryTitle": null,
+        "highestTitleTier": null,
+        "isRuler": false,
+        "isAlive": true,
+        "isPlayerDynasty": false,
+        "portraitKey": null,
+        "evidenceWarningCount": 1
+      },
+      {
+        "id": "incomplete_003",
+        "name": "残缺档案·佚名",
+        "sex": "male",
+        "birthDate": null,
+        "deathDate": null,
+        "dynasty": null,
+        "house": null,
+        "culture": null,
+        "faith": null,
+        "primaryTitle": null,
+        "highestTitleTier": null,
+        "isRuler": false,
+        "isAlive": false,
+        "isPlayerDynasty": false,
+        "portraitKey": null,
+        "evidenceWarningCount": 1
+      }
+    ],
+    "profileIds": [
+      "arnulf_001",
+      "lowborn_002",
+      "incomplete_003"
+    ]
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "isMock": true,
+  "source": "fixtures/mock",
+  "schemaVersion": "0.5.0",
+  "generatedFor": "phase-1b-boundary",
+  "data": {
+    "id": "incomplete_003",
+    "name": "残缺档案·佚名",
+    "sex": "male",
+    "traits": [],
+    "titles": [],
+    "residences": [],
+    "courtPositions": [],
+    "parents": [],
+    "spouses": [],
+    "children": [],
+    "siblings": [],
+    "friends": [],
+    "rivals": [],
+    "lovers": [],
+    "wars": [],
+    "imprisonments": [],
+    "travels": [],
+    "memories": [],
+    "timeline": [
+      {
+        "id": "ev_birth",
+        "type": "birth",
+        "title": "诞生",
+        "description": "出生记录残缺，无法定位证据。",
+        "confidence": "maybe"
+      }
+    ],
+    "evidenceWarnings": []
+  }
+}

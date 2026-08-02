@@ -70,11 +70,14 @@ SHIGUAN/
 
 ## 当前进度
 
-**Phase 0（研究与架构）已完成**：数据契约、四份文档、配置基线、Mock 数据契约已落地。
+**Phase 0.5（数据契约收口）已完成**：TS/Python 契约严格同步（Enum 约束、索引/档案分离、`EvidenceRef` 证据引用、`FixtureEnvelope` Mock 包裹、`eventIds` 非空校验），并通过 pytest（19 项）与 TS 严格类型检查。
+**Phase 1A（前端工程骨架）已完成**：`apps/web` 已可离线运行（`npm install && npm run dev`），四页面壳 + Mock 数据 + Zustand 状态 + PWA 骨架，`tsc --strict` 与 `vite build` 均通过。
+**Phase 1B（纵向流程与状态管理打磨）已完成**：索引/档案按需加载、`validateProfileEnvelope` 运行时契约校验（修复返回包裹而非档案本体的真实 bug）、基于 History API 的可靠路由（修复 popstate 不刷新 location 的真实 bug）、传记页时间线↔正文双向滚动同步、史料依据面板仅高亮当前事件告警、确定性解析状态机（pending→running→success/error，支持中止与失败注入）、边界场景覆盖、PWA 安全缓存重写（显式静态白名单，绝不缓存敏感数据）、Vitest 32 项测试通过。验证见 [roadmap.md](docs/roadmap.md)。
+**Phase 1C（响应式 · 无障碍 · 视觉定稿 · PWA 收尾）已完成**：东方数字史馆设计语言定稿（paper/ink/cinnabar/gold/jade/indigo 通道化 Design Token + 系统字体回退，不下载不提交字体）、共享组件库（MuseumSurface / ScrollPanel / SealButton / InkDivider / PortraitFrame / EvidenceBadge / TimelineNode / PageHeading / EmptyState / AssetImage / icons）、四页面视觉改造、Framer Motion `MotionConfig reducedMotion="user"` 与 CSS 媒体查询双重 reduced-motion、加载竞态修复（按人物的 `profileRequestStateById` + `requestId` 新鲜度判定）、键盘可达性（skip-link / 路由切换焦点管理 / 44px 触控）、移动端单栏重排（正文置顶→时间线→史料）、`/design-lab` 视觉实验室（不进正式导航）、PWA 缓存策略抽离为可单测纯函数 `swCachePolicy.ts`、ESLint 8 链路（`npm run lint` / `lint:fix`）、新增 34 项测试（共 66 项全绿）。验证见 [roadmap.md](docs/roadmap.md)。
+**Phase 1C.1（验收修复与视觉收口）已完成**：补齐 `BiographyPage` 测试（12 项，全量 Vitest **96 项**）、`swHandler.ts` 可测试离线导航 handler（13 项）；路由无障碍（title 随路由含人物名、切换人物焦点重入 main）；克制动效（墨线延伸 / 朱砂落印 / 时间线脉冲 / 章节 `whileInView` 淡入 / EvidencePanel 交叉淡入，reduced-motion 双重降级）；东方素材生成 WebP（PNG 合计约 6.49 MB → WebP 约 1.11 MB，CSS `image-set` 回退）并移出 4 张参考图至 `docs/design-reference/`；`ParsePage` 移除 eslint-disable 改 `useCallback` 并修 deps 警告（`npm run lint` 零错误零警告）；清理临时产物并补 `.gitignore`；建立 `docs/ASSET_AUDIT.md` 素材审计表；经用户授权推送到公开远端。验证见 [roadmap.md](docs/roadmap.md)。
 详见 [`docs/roadmap.md`](docs/roadmap.md) 与 [`docs/architecture.md`](docs/architecture.md)。
 
 后续 Phase：
-- **Phase 1** 可交互前端原型（Mock 数据）
 - **Phase 2** 存档解析 MVP
 - **Phase 3** AI 传记生成
 - **Phase 4** 家族树 / 地点 / 导出 / PWA 完善

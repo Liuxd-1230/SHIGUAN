@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="史官 SHIGUAN 印章">
+  <rect width="512" height="512" rx="96" fill="#17130f"/>
+  <circle cx="256" cy="256" r="200" fill="none" stroke="#7a1f2b" stroke-width="14"/>
+  <circle cx="256" cy="256" r="168" fill="none" stroke="#c2a24a" stroke-width="6" stroke-dasharray="2 14"/>
+  <text x="256" y="262" text-anchor="middle" font-family="Songti SC, SimSun, serif" font-size="150" font-weight="700" fill="#f3ece0">史</text>
+  <text x="256" y="372" text-anchor="middle" font-family="Songti SC, SimSun, serif" font-size="46" letter-spacing="8" fill="#c2a24a">SHIGUAN</text>
+</svg>
