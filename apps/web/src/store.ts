@@ -9,6 +9,11 @@
  *  - 人物档案载入状态改为"按人物区分"的 profileRequestStateById，
  *    不再使用单一全局 profileLoadStatus。这样在 A/B 两个人物之间快速切换时，
  *    后到/更早的响应不会互相污染（以请求序号 requestId 判定新鲜度）。
+ *
+ * Phase 2A.1（多存档隔离）：
+ *  - 人物缓存 / 请求状态 / in-flight 的键统一为 `dataSource::saveId::characterId`。
+ *    这样两个真实存档即便含有相同 characterId，也各自独立、绝不串档；
+ *    且真实存档不会误用 Mock 档案（数据源维度隔离）。
  */
 import { create } from "zustand";
 import type {
@@ -37,7 +42,22 @@ export interface ParseStageState {
 
 export type ProfileLoadStatus = "idle" | "loading" | "success" | "error";
 
-/** 单个人物的档案请求状态（按 id 区分，避免切换互相污染）。 */
+/** 档案数据源：mock（演示数据）或 real（后端真实存档）。 */
+export type DataSource = "mock" | "real";
+
+/** Mock 模式没有真实 saveId，用此哨兵占位（保证复合键唯一且可读）。 */
+export const MOCK_SAVE_ID = "__mock__";
+
+/** 复合缓存键：dataSource::saveId::characterId，多存档隔离的核心。 */
+export function profileCacheKey(
+  dataSource: DataSource,
+  saveId: string,
+  characterId: string,
+): string {
+  return `${dataSource}::${saveId}::${characterId}`;
+}
+
+/** 单个人物的档案请求状态（按复合键区分，避免切换/跨存档互相污染）。 */
 export interface ProfileRequestState {
   status: ProfileLoadStatus;
   error?: string;
@@ -48,9 +68,9 @@ export interface ProfileRequestState {
 export const IDLE_REQUEST: ProfileRequestState = { status: "idle", requestId: 0 };
 
 /**
- * 模块级（在 store 状态之外）：按人物 id 的 in-flight Promise 与每人物请求序号。
+ * 模块级（在 store 状态之外）：按复合键的 in-flight Promise 与每键请求序号。
  * 放在状态之外，原因有二：
- *  1) 便于跨调用判定"某次响应是否还是该人物的最新请求"（真正的按 id 竞态判定）；
+ *  1) 便于跨调用判定"某次响应是否还是该人物的最新请求"（真正的按复合键竞态判定）；
  *  2) 支持同人物并发请求合并为同一个 Promise，避免重复访问仓库。
  */
 interface InflightEntry {
@@ -94,14 +114,15 @@ interface AppState {
 
   // —— actions ——
   setIndex: (meta: ParsedSaveMeta, index: CharacterSummary[]) => void;
-  loadProfile: (id: string) => Promise<void>;
+  /** 按复合键载入档案：dataSource(数据源) + saveId(存档) + id(人物)，多存档隔离。 */
+  loadProfile: (dataSource: DataSource, saveId: string, id: string) => Promise<void>;
   /** 按当前模式载入索引：真实模式走后端，否则 Mock。供路由刷新恢复使用。 */
   ensureIndex: () => Promise<void>;
   setBackendMode: (b: boolean) => void;
   setSelectedId: (id: string | null) => void;
   setQuery: (q: string) => void;
   setRulerOnly: (b: boolean) => void;
-  clearProfileRequest: (id: string) => void;
+  clearProfileRequest: (dataSource: DataSource, saveId: string, id: string) => void;
 
   resetParse: () => void;
   setParseStage: (
@@ -132,59 +153,62 @@ export const useStore = create<AppState>((set, get) => ({
   setIndex: (meta, index) =>
     set({ saveMeta: meta, characterIndex: index, indexLoaded: true }),
 
-  loadProfile: async (id: string) => {
-    const current = get().profileRequestStateById[id];
+  loadProfile: async (dataSource: DataSource, saveId: string, id: string) => {
+    const key = profileCacheKey(dataSource, saveId, id);
+    const current = get().profileRequestStateById[key];
     // 缓存命中：已成功且档案已在缓存，不再访问仓库（避免重复取档）。
-    if (current?.status === "success" && get().profileCache[id]) return;
+    if (current?.status === "success" && get().profileCache[key]) return;
 
-    // 并发合并：同人物已有进行中的请求，直接复用其 Promise（只访问一次仓库）。
-    const inflight = profileInflightById.get(id);
+    // 并发合并：同复合键已有进行中的请求，直接复用其 Promise（只访问一次仓库）。
+    const inflight = profileInflightById.get(key);
     if (inflight) return inflight.promise;
 
-    // 每人物独立序号：A/B 互不干扰，A 的晚返回不会因 B 而作废。
-    const requestId = (profileReqSeqById[id] ?? 0) + 1;
-    profileReqSeqById[id] = requestId;
+    // 每复合键独立序号：A/B、不同存档互不干扰，晚返回不会作废新结果。
+    const requestId = (profileReqSeqById[key] ?? 0) + 1;
+    profileReqSeqById[key] = requestId;
     set((s) => ({
       selectedCharacterId: id,
       profileRequestStateById: {
         ...s.profileRequestStateById,
-        [id]: { status: "loading", requestId },
+        [key]: { status: "loading", requestId },
       },
     }));
 
     const promise = (async () => {
       try {
-        const profile = get().backendMode
-          ? await realCharacterRepository.loadProfile(id)
-          : await mockCharacterRepository.loadProfile(id);
-        // 仅当本次请求仍为该人物最新时才写入；旧请求不得覆盖新结果。
-        if (profileReqSeqById[id] !== requestId) return;
+        // 真实存档明确绑定 saveId；Mock 演示数据不区分 saveId。
+        const profile =
+          dataSource === "real"
+            ? await realCharacterRepository.loadProfile(id, saveId)
+            : await mockCharacterRepository.loadProfile(id);
+        // 仅当本次请求仍为该复合键最新时才写入；旧请求不得覆盖新结果。
+        if (profileReqSeqById[key] !== requestId) return;
         set((s) => ({
-          profileCache: { ...s.profileCache, [id]: profile },
+          profileCache: { ...s.profileCache, [key]: profile },
           profileRequestStateById: {
             ...s.profileRequestStateById,
-            [id]: { status: "success", requestId },
+            [key]: { status: "success", requestId },
           },
         }));
       } catch (e) {
-        if (profileReqSeqById[id] !== requestId) return;
+        if (profileReqSeqById[key] !== requestId) return;
         const message = e instanceof Error ? e.message : String(e);
         set((s) => ({
           profileRequestStateById: {
             ...s.profileRequestStateById,
-            [id]: { status: "error", error: message, requestId },
+            [key]: { status: "error", error: message, requestId },
           },
         }));
       } finally {
         // 仅当该条目仍属于本次请求时才清除，避免误删重试产生的新请求。
-        const entry = profileInflightById.get(id);
+        const entry = profileInflightById.get(key);
         if (entry && entry.requestId === requestId) {
-          profileInflightById.delete(id);
+          profileInflightById.delete(key);
         }
       }
     })();
 
-    profileInflightById.set(id, { promise, requestId });
+    profileInflightById.set(key, { promise, requestId });
     return promise;
   },
 
@@ -202,16 +226,17 @@ export const useStore = create<AppState>((set, get) => ({
   },
   setQuery: (q) => set({ query: q }),
   setRulerOnly: (b) => set({ rulerOnly: b }),
-  clearProfileRequest: (id) =>
+  clearProfileRequest: (dataSource, saveId, id) =>
     set((s) => {
+      const key = profileCacheKey(dataSource, saveId, id);
       // 使任何进行中的旧请求作废（其响应回来时会被丢弃），
       // 并清掉 in-flight 条目，使紧随其后的重试能以全新请求覆盖。
-      profileReqSeqById[id] = (profileReqSeqById[id] ?? 0) + 1;
-      profileInflightById.delete(id);
+      profileReqSeqById[key] = (profileReqSeqById[key] ?? 0) + 1;
+      profileInflightById.delete(key);
       return {
         profileRequestStateById: {
           ...s.profileRequestStateById,
-          [id]: { status: "idle", requestId: 0 },
+          [key]: { status: "idle", requestId: 0 },
         },
       };
     }),

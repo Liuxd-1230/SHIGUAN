@@ -24,8 +24,8 @@ export interface CharacterIndexResult {
 export interface CharacterRepository {
   /** 载入人物摘要索引（供选择页），按需也可包含存档元信息。 */
   loadIndex(): Promise<CharacterIndexResult>;
-  /** 按 id 载入完整档案（真正的按需取档）。 */
-  loadProfile(id: string): Promise<CharacterProfile>;
+  /** 按 id 载入完整档案（真正的按需取档）。saveId 供真实存档绑定（Mock 忽略）。 */
+  loadProfile(id: string, saveId?: string): Promise<CharacterProfile>;
 }
 
 // 懒加载：每个完整档案是独立 chunk，仅在调用 loadProfile 时动态 import。

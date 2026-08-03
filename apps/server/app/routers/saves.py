@@ -67,9 +67,10 @@ _registry = SaveRegistry(STAGING_ROOT)
 _session_manager = SessionManager(CACHE_ROOT)
 
 _watcher: DirectoryWatcher | None = None
-# 监听事件：只含 eventId/type/saveId/fileName/timestamp（无完整本地路径）。
+# 监听事件：只含 eventId/seq/type/saveId/fileName/timestamp（无完整本地路径）。
 _watcher_events: list[dict] = []
 _last_event_id: str | None = None
+_event_seq: int = 0
 _loc_cache: dict[tuple, LocalizationLoader] = {}
 
 
@@ -127,15 +128,17 @@ def _save_id_for_path(path: str) -> str:
 
 
 def _on_watch_change(added, removed, changed) -> None:
-    global _last_event_id
+    global _last_event_id, _event_seq
     ts = datetime.now(timezone.utc).isoformat()
     for kind, items in (("added", added), ("removed", removed), ("changed", changed)):
         for s in items:
             save_id = _save_id_for_path(s.path)
             event_id = uuid.uuid4().hex
+            _event_seq += 1
             _watcher_events.append(
                 {
                     "eventId": event_id,
+                    "seq": _event_seq,
                     "type": kind,
                     "saveId": save_id,
                     "fileName": s.name,
@@ -298,6 +301,11 @@ async def import_local_save(file: UploadFile = File(...)):
         dest.unlink(missing_ok=True)
         raise _fail(500, "import_failed", "导入写入失败，已清理临时文件。")
 
+    # 空文件：未写入任何字节 → 400 empty_file，并删除半成品（不登记、不残留）。
+    if written == 0:
+        dest.unlink(missing_ok=True)
+        raise _fail(400, "empty_file", "导入文件为空，已清理临时文件。")
+
     rec = _registry.register(dest)
     return {
         "saveId": rec.save_id,
@@ -355,12 +363,26 @@ def watch_stop():
 
 
 @router.get("/local-saves/watch/status")
-def watch_status():
+def watch_status(sinceEventId: Optional[str] = None):
+    """返回监听状态与增量事件。
+
+    - 事件只含 eventId/seq/type/saveId/fileName/timestamp（无完整本地路径）。
+    - 传入 sinceEventId 仅返回该事件之后的新事件（前端据此游标只处理新事件）。
+    - 未知/空的 sinceEventId 回退为返回最近事件。
+    """
+    events = _watcher_events
+    if sinceEventId:
+        try:
+            idx = next(i for i, e in enumerate(events) if e["eventId"] == sinceEventId)
+            events = events[idx + 1 :]
+        except StopIteration:
+            # 游标未知（如服务端重启已丢弃）：返回全部近期事件，前端以 lastEventId 重新对齐。
+            events = events
     return {
         "running": bool(_watcher and _watcher._thread and _watcher._thread.is_alive()),
         "lastEventId": _last_event_id,
-        # 事件不含完整本地路径，仅 eventId/type/saveId/fileName/timestamp。
-        "recent_events": _watcher_events[-20:],
+        # 事件不含完整本地路径，仅 eventId/seq/type/saveId/fileName/timestamp。
+        "recent_events": events[-20:],
     }
 
 
@@ -392,7 +414,7 @@ def inspect_save_endpoint(save_id: str):
 
 
 @router.get("/local-saves/{save_id}/mods")
-def mods_endpoint(save_id: str):
+def mods_endpoint(save_id: str, full_paths: bool = Query(False)):
     _rec, sess = _ensure_session(save_id)
     try:
         meta = _session_manager.meta(sess)
@@ -409,7 +431,9 @@ def mods_endpoint(save_id: str):
     loader = _build_localization(save_id, sess.signature, report.required)
     return {
         "saveId": save_id,
-        "report": report.to_dict(),
+        # 默认脱敏：descriptor/content/archive/localization 路径只发基名（文件名），
+        # 不默认发送完整绝对路径（隐私/安全）。调试可传 full_paths=true 取完整路径。
+        "report": report.to_dict(redact_paths=not full_paths),
         "localization": {"loaded_languages": loader.loaded_languages, "entry_count": loader.count()},
     }
 

@@ -57,25 +57,45 @@ export default function LocalSavesPanel() {
     }
   }
 
+  // 增量监听游标：记录最近一次见到的事件（lastEventId），
+  // 仅向 /watch/status 请求该事件之后的新事件，避免重复处理历史事件。
   useEffect(() => {
     let cancelled = false;
     let pollTimer: number | undefined;
+    let lastEventId: string | null = null;
     checkBackendAvailable()
       .then((ok) => {
         if (cancelled) return;
         setAvailable(ok);
         if (!ok) return;
         refresh();
-        // 启动目录监听，并轮询状态；出现新增/覆盖事件时自动重新扫描（规范十二.2）。
+        // 启动目录监听（全局后台服务，不随本组件卸载而关闭）。
         fetch(`${API_BASE}/api/local-saves/watch/start`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ interval: 2 }),
         }).catch(() => {});
+        // 先对齐游标：取一次状态，仅记录 lastEventId（不触发刷新，避免重复扫描）。
+        fetch(`${API_BASE}/api/local-saves/watch/status`)
+          .then((r) => r.json())
+          .then((st: { lastEventId?: string | null }) => {
+            if (!cancelled && st.lastEventId) lastEventId = st.lastEventId;
+          })
+          .catch(() => {});
+        // 轮询增量事件：仅处理 sinceEventId 之后的新事件，并更新游标。
         pollTimer = window.setInterval(() => {
-          fetch(`${API_BASE}/api/local-saves/watch/status`)
+          const url = lastEventId
+            ? `${API_BASE}/api/local-saves/watch/status?sinceEventId=${encodeURIComponent(lastEventId)}`
+            : `${API_BASE}/api/local-saves/watch/status`;
+          fetch(url)
             .then((r) => r.json())
-            .then((st: { recent_events?: Array<{ type: string }> }) => {
+            .then((st: {
+              lastEventId?: string | null;
+              recent_events?: Array<{ eventId: string }>;
+            }) => {
+              if (cancelled) return;
+              if (st.lastEventId) lastEventId = st.lastEventId;
+              // 后端已按 sinceEventId 过滤，recent_events 均为新事件。
               if (st.recent_events && st.recent_events.length > 0) refresh();
             })
             .catch(() => {});
@@ -85,9 +105,7 @@ export default function LocalSavesPanel() {
     return () => {
       cancelled = true;
       if (pollTimer) window.clearInterval(pollTimer);
-      fetch(`${API_BASE}/api/local-saves/watch/stop`, {
-        method: "POST",
-      }).catch(() => {});
+      // 注意：页面卸载不再默认关闭全局监听（监听是后台服务，由应用退出统一回收）。
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { mockCharacterRepository } from "../characterRepository";
-import { useStore } from "../../store";
+import { useStore, profileCacheKey, MOCK_SAVE_ID } from "../../store";
 import { resetStore } from "../../test/helpers";
+
+const key = (id: string) => profileCacheKey("mock", MOCK_SAVE_ID, id);
 
 describe("CharacterRepository（真正的按需加载）", () => {
   it("索引加载成功，且不内联任何完整档案", async () => {
@@ -18,32 +20,32 @@ describe("CharacterRepository（真正的按需加载）", () => {
     await mockCharacterRepository.loadIndex();
     expect(Object.keys(useStore.getState().profileCache).length).toBe(0);
 
-    await useStore.getState().loadProfile("arnulf_001");
-    expect(useStore.getState().profileCache["arnulf_001"]).toBeDefined();
-    expect(useStore.getState().profileCache["arnulf_001"]?.id).toBe("arnulf_001");
+    await useStore.getState().loadProfile("mock", MOCK_SAVE_ID, "arnulf_001");
+    expect(useStore.getState().profileCache[key("arnulf_001")]).toBeDefined();
+    expect(useStore.getState().profileCache[key("arnulf_001")]?.id).toBe("arnulf_001");
   });
 
   it("已加载档案进入缓存并保持成功状态", async () => {
     resetStore();
-    await useStore.getState().loadProfile("arnulf_001");
-    expect(useStore.getState().profileRequestStateById["arnulf_001"].status).toBe("success");
-    expect(useStore.getState().profileCache["arnulf_001"]?.name).toBe("阿努尔夫");
+    await useStore.getState().loadProfile("mock", MOCK_SAVE_ID, "arnulf_001");
+    expect(useStore.getState().profileRequestStateById[key("arnulf_001")].status).toBe("success");
+    expect(useStore.getState().profileCache[key("arnulf_001")]?.name).toBe("阿努尔夫");
 
-    await useStore.getState().loadProfile("arnulf_001");
-    expect(useStore.getState().profileRequestStateById["arnulf_001"].status).toBe("success");
+    await useStore.getState().loadProfile("mock", MOCK_SAVE_ID, "arnulf_001");
+    expect(useStore.getState().profileRequestStateById[key("arnulf_001")].status).toBe("success");
   });
 
   it("未知人物 ID 进入可读错误状态", async () => {
     resetStore();
-    await useStore.getState().loadProfile("ghost_999");
-    expect(useStore.getState().profileRequestStateById["ghost_999"].status).toBe("error");
-    expect(useStore.getState().profileRequestStateById["ghost_999"].error).toContain("ghost_999");
+    await useStore.getState().loadProfile("mock", MOCK_SAVE_ID, "ghost_999");
+    expect(useStore.getState().profileRequestStateById[key("ghost_999")].status).toBe("error");
+    expect(useStore.getState().profileRequestStateById[key("ghost_999")].error).toContain("ghost_999");
   });
 
   it("损坏的档案进入可读错误状态（不白屏）", async () => {
     resetStore();
-    await useStore.getState().loadProfile("incomplete_003");
-    expect(useStore.getState().profileRequestStateById["incomplete_003"].status).toBe("error");
-    expect(useStore.getState().profileRequestStateById["incomplete_003"].error).toBeTruthy();
+    await useStore.getState().loadProfile("mock", MOCK_SAVE_ID, "incomplete_003");
+    expect(useStore.getState().profileRequestStateById[key("incomplete_003")].status).toBe("error");
+    expect(useStore.getState().profileRequestStateById[key("incomplete_003")].error).toBeTruthy();
   });
 });

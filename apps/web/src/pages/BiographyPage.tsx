@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { useStore, IDLE_REQUEST } from "../store";
+import { useStore, IDLE_REQUEST, profileCacheKey, MOCK_SAVE_ID, type DataSource } from "../store";
 import { useRoute, navigate, ROUTES } from "../lib/router";
 import { setActiveSaveId } from "../lib/realRepository";
 import { buildDraft, eventChapterMap } from "../lib/buildOutline";
@@ -47,16 +47,20 @@ export default function BiographyPage() {
     ? ROUTES.savesCharacters(saveId)
     : ROUTES.characters;
 
+  // 复合键维度：dataSource(real/mock) + saveId + characterId，确保多存档不串档。
+  const dataSource: DataSource = isReal ? "real" : "mock";
+  const effectiveSaveId = isReal ? (saveId as string) : MOCK_SAVE_ID;
+  const pkey = characterId ? profileCacheKey(dataSource, effectiveSaveId, characterId) : "";
+
   const characterIndex = useStore((s) => s.characterIndex);
   const indexLoaded = useStore((s) => s.indexLoaded);
-  const profileCache = useStore((s) => s.profileCache);
   const reqState = useStore((s) =>
-    characterId ? s.profileRequestStateById[characterId] ?? IDLE_REQUEST : IDLE_REQUEST,
+    pkey ? s.profileRequestStateById[pkey] ?? IDLE_REQUEST : IDLE_REQUEST,
   );
   const loadProfile = useStore((s) => s.loadProfile);
   const clearProfileRequest = useStore((s) => s.clearProfileRequest);
 
-  const profile = characterId ? profileCache[characterId] : undefined;
+  const profile = useStore((s) => (pkey ? s.profileCache[pkey] : undefined));
   const summary = useMemo(
     () => characterIndex.find((c) => c.id === characterId),
     [characterIndex, characterId],
@@ -78,9 +82,9 @@ export default function BiographyPage() {
     // 真实模式无全量索引，跳过该判断，直接按需取档。
     if (!isReal && !summary) return;
     if (reqState.status !== "idle") return;
-    if (profileCache[characterId]) return;
-    loadProfile(characterId);
-  }, [characterId, summary, reqState.status, profileCache, loadProfile, isReal]);
+    if (profile) return;
+    loadProfile(dataSource, effectiveSaveId, characterId);
+  }, [characterId, summary, reqState.status, profile, loadProfile, isReal, dataSource, effectiveSaveId]);
 
   const draft = useMemo(
     () => (profile ? buildDraft(profile) : null),
@@ -188,8 +192,8 @@ export default function BiographyPage() {
               seal
               onClick={() => {
                 if (characterId) {
-                  clearProfileRequest(characterId);
-                  loadProfile(characterId);
+                  clearProfileRequest(dataSource, effectiveSaveId, characterId);
+                  loadProfile(dataSource, effectiveSaveId, characterId);
                 }
               }}
             >

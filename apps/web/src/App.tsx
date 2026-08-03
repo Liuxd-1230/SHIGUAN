@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig } from "framer-motion";
-import { useStore } from "./store";
+import { useStore, profileCacheKey, MOCK_SAVE_ID, type DataSource } from "./store";
 import { useRoute, navigate, ROUTES } from "./lib/router";
 import Header from "./components/Header";
 import StartPage from "./pages/StartPage";
@@ -38,9 +38,13 @@ export default function App() {
   const bioName = useStore((s) => {
     if (route.name !== "bio") return undefined;
     const id = route.params.characterId;
+    if (!id) return undefined;
+    // 复合键：真实/ Mock 数据源 + saveId + characterId，与 store 缓存键一致。
+    const ds: DataSource = route.params.saveId ? "real" : "mock";
+    const sid = route.params.saveId ?? MOCK_SAVE_ID;
     return (
       s.characterIndex.find((c) => c.id === id)?.name ??
-      s.profileCache[id ?? ""]?.name
+      s.profileCache[profileCacheKey(ds, sid, id)]?.name
     );
   });
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);

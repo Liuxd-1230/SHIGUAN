@@ -37,9 +37,10 @@ export class RealCharacterRepository implements CharacterRepository {
     };
   }
 
-  async loadProfile(id: string): Promise<CharacterProfile> {
-    if (!_activeSaveId) throw new Error("未选择本地存档（saveId 为空）。");
-    return api.getProfile(_activeSaveId, id);
+  async loadProfile(id: string, saveId?: string): Promise<CharacterProfile> {
+    const sid = saveId ?? _activeSaveId;
+    if (!sid) throw new Error("未选择本地存档（saveId 为空）。");
+    return api.getProfile(sid, id);
   }
 }
 

@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import BiographyPage from "../BiographyPage";
 import { resetStore, seedIndex, setPath } from "../../test/helpers";
-import { useStore, resetProfileInflight } from "../../store";
+import { useStore, resetProfileInflight, profileCacheKey, MOCK_SAVE_ID } from "../../store";
 import { mockCharacterRepository } from "../../lib/characterRepository";
 import indexJson from "@mock/index.json";
 import type {
@@ -382,8 +382,8 @@ describe("BiographyPage（按需取档 / 双向联动 / 无障碍 / 动效边界
     expect(screen.queryByText(/正在载入/)).not.toBeInTheDocument();
 
     const st = useStore.getState();
-    expect(st.profileRequestStateById["arnulf_001"].status).toBe("success");
-    expect(st.profileRequestStateById["lowborn_002"].status).toBe("success");
+    expect(st.profileRequestStateById[profileCacheKey("mock", MOCK_SAVE_ID, "arnulf_001")].status).toBe("success");
+    expect(st.profileRequestStateById[profileCacheKey("mock", MOCK_SAVE_ID, "lowborn_002")].status).toBe("success");
   });
 
   it("9) 密度切换按钮正确反映 aria-pressed", async () => {

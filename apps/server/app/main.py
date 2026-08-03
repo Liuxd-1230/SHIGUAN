@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="史官 SHIGUAN 后端", version="0.2.0")
+app = FastAPI(title="史官 SHIGUAN 后端", version="0.2.0", lifespan=lifespan)
 
 @app.exception_handler(HTTPException)
 async def _unified_error(request: Request, exc: HTTPException):

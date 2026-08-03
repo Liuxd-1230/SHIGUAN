@@ -80,20 +80,32 @@ class ModCompatibilityReport:
     def corrupted_count(self) -> int:
         return len(self.corrupted)
 
-    def to_dict(self) -> dict:
+    def to_dict(self, redact_paths: bool = True) -> dict:
         def _m(m: ResolvedMod) -> dict:
+            # 默认脱敏：路径字段只发基名（文件名），不默认发送完整绝对路径。
+            # 仅在显式 full_paths=True（调试）时回传完整本地路径。
+            if redact_paths:
+                descriptor = _redact_path(m.descriptor_path)
+                content = _redact_path(m.content_path)
+                archive = _redact_path(m.archive_path)
+                locs = [_redact_path(p) for p in m.localization_paths]
+            else:
+                descriptor = m.descriptor_path
+                content = m.content_path
+                archive = m.archive_path
+                locs = list(m.localization_paths)
             return {
                 "mod_id": m.mod_id,
                 "remote_file_id": m.remote_file_id,
                 "name": m.name,
-                "descriptor_path": m.descriptor_path,
-                "content_path": m.content_path,
-                "archive_path": m.archive_path,
+                "descriptor_path": descriptor,
+                "content_path": content,
+                "archive_path": archive,
                 "source_type": m.source_type,
                 "load_order": m.load_order,
                 "replace_path": m.replace_path,
                 "dependencies": m.dependencies,
-                "localization_paths": m.localization_paths,
+                "localization_paths": locs,
                 "found_locally": m.found_locally,
                 "corrupted": m.corrupted,
                 "resolved": m.resolved,
@@ -120,6 +132,13 @@ def _is_relative_to(path: Path, base: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _redact_path(p: str | None) -> str | None:
+    """脱敏单条路径：只保留基名（文件名），不默认发送完整绝对路径（隐私/安全）。"""
+    if not p:
+        return None
+    return Path(p).name
 
 
 class ModResolver:

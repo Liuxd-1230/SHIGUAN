@@ -14,33 +14,85 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes as wintypes
 import os
 from pathlib import Path
 from typing import Callable, Optional
 
 # FOLDERID_Documents = {FDD39AD0-238F-46AF-ADB4-6C85480369C7}
-_FOLDERID_DOCUMENTS = "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"
+_FOLDERID_DOCUMENTS_STR = "FDD39AD0-238F-46AF-ADB4-6C85480369C7"
+
+
+class GUID(ctypes.Structure):
+    """与 Windows KNOWNFOLDERID GUID 结构逐字节对齐（16 字节）。
+
+    SHGetKnownFolderPath 的 REFKNOWNFOLDERID 参数是 ``const GUID*``，
+    必须传真正的 GUID 结构，不能传字符串缓冲（否则前 8 个 wchar 会被误读为 GUID）。
+    """
+
+    _fields_ = [
+        ("Data1", ctypes.c_ulong),
+        ("Data2", ctypes.c_ushort),
+        ("Data3", ctypes.c_ushort),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+    @classmethod
+    def from_string(cls, s: str) -> "GUID":
+        s = s.strip().strip("{}").upper()
+        parts = s.split("-")
+        if len(parts) != 5:
+            raise ValueError(f"非法 GUID 字符串：{s!r}")
+        data4_hex = parts[3] + parts[4]
+        data4 = (ctypes.c_ubyte * 8)(*bytes.fromhex(data4_hex))
+        return cls(
+            Data1=int(parts[0], 16),
+            Data2=int(parts[1], 16),
+            Data3=int(parts[2], 16),
+            Data4=data4,
+        )
+
+
+_FOLDERID_DOCUMENTS = GUID.from_string(_FOLDERID_DOCUMENTS_STR)
 
 
 def _known_folder_documents() -> Optional[str]:
-    """调用 SHGetKnownFolderPath(FOLDERID_Documents)。失败返回 None。"""
+    """调用 SHGetKnownFolderPath(FOLDERID_Documents)。失败返回 None。
+
+    使用正确的 GUID 结构 + 显式 argtypes/restype，确保 64 位下也能正确 marshalling。
+    """
     try:
         shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
     except AttributeError:
         return None  # 非 Windows
-    GUID = ctypes.create_unicode_buffer(_FOLDERID_DOCUMENTS)
+
     ppath = ctypes.c_wchar_p()
-    # 0x0000 = KF_FLAG_DEFAULT
-    hr = shell32.SHGetKnownFolderPath(ctypes.byref(GUID), 0, None, ctypes.byref(ppath))
-    if hr != 0 or not ppath:
-        return None
     try:
-        return ppath.value  # type: ignore[union-attr]
+        # 显式声明签名，避免 ctypes 默认按 int 推断导致的栈错位（64 位必崩）。
+        shell32.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(GUID),
+            wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_wchar_p),
+        ]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long  # HRESULT 即 32 位有符号长整型
+        # 0x0000 = KF_FLAG_DEFAULT
+        hr = shell32.SHGetKnownFolderPath(
+            ctypes.byref(_FOLDERID_DOCUMENTS), 0, None, ctypes.byref(ppath)
+        )
+        if hr != 0 or not ppath or not ppath.value:
+            return None
+        return ppath.value
+    except OSError:
+        return None
     finally:
-        try:
-            ctypes.windll.ole32.CoTaskMemFree(ppath)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        # SHGetKnownFolderPath 成功时 ppath 指向 CoTaskMemAlloc 的内存，必须释放。
+        if ppath and ppath.value:
+            try:
+                ole32.CoTaskMemFree(ppath)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _onedrive_documents() -> Optional[str]:

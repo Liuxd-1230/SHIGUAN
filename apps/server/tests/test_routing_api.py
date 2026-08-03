@@ -275,3 +275,77 @@ def test_cors_allows_localhost(client):
     c, _a, _r, _s = client
     r = c.get("/api/health", headers={"Origin": "http://localhost:5173"})
     assert r.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+# -- 监听状态增量游标（八） -----------------------------------------------
+def test_watch_status_supports_since_event_id(client):
+    c, _a, _reg, _s = client
+    saves._watcher_events.clear()
+    saves._last_event_id = None
+    for i in range(3):
+        eid = f"evt-{i}"
+        saves._watcher_events.append(
+            {
+                "eventId": eid,
+                "seq": i + 1,
+                "type": "added",
+                "saveId": f"s{i}",
+                "fileName": f"a{i}.ck3",
+                "timestamp": "t",
+            }
+        )
+        saves._last_event_id = eid
+    # 无游标：返回全部近期事件
+    r = c.get("/api/local-saves/watch/status")
+    assert r.status_code == 200
+    assert len(r.json()["recent_events"]) == 3
+    # since=evt-0：仅返回其后的 evt-1、evt-2
+    r2 = c.get("/api/local-saves/watch/status?sinceEventId=evt-0")
+    evs = r2.json()["recent_events"]
+    assert [e["eventId"] for e in evs] == ["evt-1", "evt-2"]
+    assert r2.json()["lastEventId"] == "evt-2"
+    # 未知游标：回退为返回全部近期事件（前端以 lastEventId 重新对齐）
+    r3 = c.get("/api/local-saves/watch/status?sinceEventId=does-not-exist")
+    assert len(r3.json()["recent_events"]) == 3
+
+
+# -- Mod API 路径脱敏（六） --------------------------------------------------
+def test_mods_endpoint_redacts_paths_by_default(client, tmp_path, monkeypatch):
+    mods_dir = tmp_path / "mods"
+    mods_dir.mkdir()
+    (mods_dir / "ugc_1.mod").write_text(
+        'name="Mod One"\npath="mod/ugc_1"\nremote_file_id="1"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        saves,
+        "effective_paths",
+        lambda: {"mods_dir": str(mods_dir), "saves_dir": None, "game_dir": None},
+    )
+    c, _a, _reg, _s = client
+    # 导入端点注册一个存档（FakeAdapter 提供 meta）
+    r = c.post("/api/local-saves/import", files={"file": ("save.ck3", b"SAV0101" + b"\x00" * 5)})
+    assert r.status_code == 200
+    sid = r.json()["saveId"]
+    # 默认脱敏：descriptor_path 只有基名，无路径分隔符
+    r2 = c.get(f"/api/local-saves/{sid}/mods")
+    assert r2.status_code == 200
+    first = next(m for m in r2.json()["report"]["required"] if m["mod_id"] == "ugc_1")
+    assert first["descriptor_path"] == "ugc_1.mod"
+    assert "\\" not in first["descriptor_path"] and "/" not in first["descriptor_path"]
+    # 调试可用 full_paths=true 取完整路径
+    r3 = c.get(f"/api/local-saves/{sid}/mods?full_paths=true")
+    first3 = next(m for m in r3.json()["report"]["required"] if m["mod_id"] == "ugc_1")
+    assert first3["descriptor_path"] == str(mods_dir / "ugc_1.mod")
+
+
+# -- 空导入文件 → 400 empty_file + 清理半成品（七） -------------------------
+def test_import_empty_file_returns_empty_file_and_cleans_up(client, tmp_path, monkeypatch):
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    monkeypatch.setattr(saves, "INCOMING_ROOT", incoming)
+    c, _a, _reg, _s = client
+    r = c.post("/api/local-saves/import", files={"file": ("empty.ck3", b"")})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "empty_file"
+    # 半成品已删除：incoming 目录不应残留任何 .ck3
+    assert list(incoming.glob("*.ck3")) == []

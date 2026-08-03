@@ -130,3 +130,39 @@ def test_resolved_fields_present(tmp_path):
     assert m.remote_file_id == "123"
     assert m.dependencies == ["mod/y.mod"]
     assert m.localization_paths  # 至少尝试定位 localization
+
+
+def test_to_dict_redacts_paths_by_default(tmp_path):
+    """to_dict 默认脱敏：路径字段只给基名；redact_paths=False 回传完整路径。"""
+    from app.services.mod_resolver import ResolvedMod
+
+    m = ResolvedMod(
+        mod_id="x",
+        remote_file_id="123",
+        name="X",
+        descriptor_path="C:/Users/me/Documents/Paradox Interactive/Crusader Kings III/mod/x.mod",
+        content_path="C:/games/steam/workshop/content/1158310/123/mod_x",
+        archive_path="C:/games/steam/workshop/123.zip",
+        localization_paths=[
+            "C:/games/steam/workshop/content/1158310/123/mod_x/localization",
+        ],
+    )
+    from app.services.mod_resolver import ModCompatibilityReport
+
+    d = ModCompatibilityReport()
+    d.required.append(m)
+    d_reported = d.to_dict()
+    first = d_reported["required"][0]
+    assert first["descriptor_path"] == "x.mod"
+    assert first["content_path"] == "mod_x"
+    assert first["archive_path"] == "123.zip"
+    assert first["localization_paths"] == ["localization"]
+    # 无路径分隔符泄露
+    for key in ("descriptor_path", "content_path", "archive_path"):
+        assert "\\" not in first[key] and "/" not in first[key]
+
+    # 调试：full_paths 回传完整绝对路径
+    full = d.to_dict(redact_paths=False)
+    full_first = full["required"][0]
+    assert full_first["descriptor_path"].startswith("C:/")
+    assert full_first["localization_paths"][0].startswith("C:/")

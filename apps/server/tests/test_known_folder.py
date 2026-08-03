@@ -1,12 +1,41 @@
 """Known Folder API 测试（规范七）：可注入解析函数，不依赖真实 Windows 用户目录。
 
 所有用例只在 pytest tmp_path 下造目录，绝不写真实个人目录（C:\\Users\\...）。
+仅 Windows 执行的 smoke test 直接调用真实 SHGetKnownFolderPath，验证 ctypes GUID 结构正确。
 """
 from __future__ import annotations
 
+import sys
+
+import pytest
 from pathlib import Path
 
-from app.services.known_folder import resolve_ck3_user_dir, resolve_documents_dir
+from app.services.known_folder import (
+    GUID,
+    _known_folder_documents,
+    resolve_ck3_user_dir,
+    resolve_documents_dir,
+)
+
+
+def test_guid_struct_layout():
+    """GUID 结构逐字节对齐 Windows KNOWNFOLDERID（16 字节，前 3 段与本机字节序一致）。"""
+    g = GUID.from_string("FDD39AD0-238F-46AF-ADB4-6C85480369C7")
+    assert g.Data1 == 0xFDD39AD0
+    assert g.Data2 == 0x238F
+    assert g.Data3 == 0x46AF
+    assert bytes(g.Data4) == bytes.fromhex("ADB46C85480369C7")
+    import ctypes
+
+    assert ctypes.sizeof(g) == 16
+
+
+# 仅 Windows 执行：真实调用 SHGetKnownFolderPath，验证修复后的 ctypes GUID 调用。
+win32_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="仅 Windows：需真实 shell32.SHGetKnownFolderPath（已知文件夹 API）",
+)
+
 
 
 def _clear_env(monkeypatch):
@@ -106,3 +135,20 @@ def test_ck3_user_dir_found(monkeypatch, tmp_path):
     ck3, source = resolve_ck3_user_dir(inject=lambda: str(docs_dir))
     assert Path(ck3) == ck3_dir
     assert source == "known_folder"
+
+
+@win32_only
+def test_real_shgetknownfolderpath_returns_documents():
+    """真实调用：SHGetKnownFolderPath(FOLDERID_Documents) 返回存在的 Documents 目录。"""
+    result = _known_folder_documents()
+    assert result is not None
+    assert Path(result).exists()
+
+
+@win32_only
+def test_real_resolve_documents_dir_without_inject():
+    """无 inject 时真实走 Known Folder API（CI 在 ubuntu 自动跳过，本地 Windows 实际执行）。"""
+    docs, source = resolve_documents_dir(inject=None)
+    assert docs is not None
+    assert source in ("known_folder", "onedrive", "userprofile", "setting")
+    assert Path(docs).exists()
