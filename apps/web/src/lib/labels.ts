@@ -1,11 +1,25 @@
 /** 中文标签映射，集中管理避免散落。 */
-import type { Confidence } from "@shiguan/save-schema";
+import type { Confidence, TitleTier } from "@shiguan/save-schema";
 
 export const CONFIDENCE_LABELS: Record<Confidence, string> = {
   confirmed: "确认",
   inferred: "推断",
   uncertain: "存疑",
 };
+
+/** 头衔等级中文名（M3：用于头衔卡片/主头衔展示）。 */
+export const TITLE_TIER_LABELS: Record<TitleTier, string> = {
+  barony: "男爵领",
+  county: "伯爵领",
+  duchy: "公爵领",
+  kingdom: "王国",
+  empire: "帝国",
+};
+
+/** 头衔等级徽标文案；未知等级返回 null（不伪造）。 */
+export function titleTierLabel(tier?: TitleTier): string | null {
+  return tier ? (TITLE_TIER_LABELS[tier] ?? null) : null;
+}
 
 /** 证据来源类别的中文名称（用于"史料依据"面板）。 */
 export const SOURCE_TYPE_LABELS: Record<string, string> = {

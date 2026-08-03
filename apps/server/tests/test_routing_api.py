@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.routers import saves
 from app.services import save_registry
+from app.services.game_data_resolver import GameDataResolver
 from app.services.save_registry import SaveRegistry
 from app.services.session_manager import SessionManager
 
@@ -38,6 +39,8 @@ class FakeAdapter:
                 "semantic_fields_mapped": 12, "unresolved_semantic_fields": ["faith", "dynasty"],
                 "version_specific_field_mappings": [],
             }, "parse_ms": 1.0,
+            # M3.1：_cache_valid 要求 reader_version 存在，模拟新版 reader 产物。
+            "reader_version": "0.1.0-test",
         }
         (cache_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         (cache_dir / "mods.json").write_text(json.dumps({"mods": meta["mods"]}), encoding="utf-8")
@@ -63,9 +66,57 @@ class FakeAdapter:
         (cache_dir / "characters.ndjson").write_text("\n".join(buf) + "\n", encoding="utf-8")
         (cache_dir / "character-offsets.json").write_text(json.dumps(offsets), encoding="utf-8")
         (cache_dir / "manifest.json").write_text(json.dumps({"signature": cache_dir.name}), encoding="utf-8")
+        # M2/M3 缓存产物：实体索引 + 头衔（landed_titles 反解）。
+        (cache_dir / "entities.json").write_text(
+            json.dumps({"schema_version": 1, "reader_version": "0.1.0", "kinds": {}}),
+            encoding="utf-8",
+        )
+        # 头衔：Alice(1) 现任 d_alpha（公爵，历史两段），Bob(2) 曾持 c_beta（伯爵）后失去。
+        titles = {
+            "schema_version": 1,
+            "reader_version": "0.1.0",
+            "scan_ms": 1.0,
+            "title_count": 2,
+            "titles": [
+                {
+                    "key": "d_alpha",
+                    "name": "阿尔法公国",
+                    "name_source": "save",
+                    "tier": "duchy",
+                    "holder_id": "1",
+                    "de_facto_liege_id": None,
+                    "history": [
+                        {"date": "760.1.1", "holder_id": "9", "kind": "holder"},
+                        {"date": "780.5.10", "holder_id": "1", "kind": "holder"},
+                    ],
+                },
+                {
+                    "key": "c_beta",
+                    "name": "c_beta",
+                    "name_source": "key",
+                    "tier": "county",
+                    "holder_id": None,
+                    "de_facto_liege_id": None,
+                    "history": [
+                        {"date": "770.2.2", "holder_id": "2", "kind": "holder"},
+                        {"date": "790.3.3", "holder_id": "3", "kind": "holder"},
+                    ],
+                },
+            ],
+            "warnings": [],
+        }
+        (cache_dir / "titles.json").write_text(
+            json.dumps(titles, ensure_ascii=False), encoding="utf-8"
+        )
 
     def meta(self, cache_dir):
         return json.loads(Path(cache_dir / "meta.json").read_text(encoding="utf-8"))
+
+    def titles(self, cache_dir):
+        return json.loads(Path(cache_dir / "titles.json").read_text(encoding="utf-8"))
+
+    def entities(self, cache_dir):
+        return json.loads(Path(cache_dir / "entities.json").read_text(encoding="utf-8"))
 
     def character(self, cache_dir, cid):
         lines = Path(cache_dir / "characters.ndjson").read_text(encoding="utf-8").splitlines()
@@ -88,6 +139,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(saves, "_registry", reg)
     monkeypatch.setattr(saves, "_session_manager", sm)
     monkeypatch.setattr(saves, "_loc_cache", {})
+    monkeypatch.setattr(saves, "_title_index_cache", {})
+    # 测试隔离：不加载真实游戏本地化（CI/无游戏环境一致，且快）。
+    monkeypatch.setattr(saves, "_game_resolver", lambda: GameDataResolver(game_dir="__no_game__"))
     monkeypatch.setattr(saves, "_watcher_events", [])
     monkeypatch.setattr(saves, "_last_event_id", None)
     monkeypatch.setattr(save_registry, "wait_until_stable", lambda *a, **k: True)
@@ -349,3 +403,151 @@ def test_import_empty_file_returns_empty_file_and_cleans_up(client, tmp_path, mo
     assert r.json()["error"]["code"] == "empty_file"
     # 半成品已删除：incoming 目录不应残留任何 .ck3
     assert list(incoming.glob("*.ck3")) == []
+
+
+def test_critical_routes_registered():
+    """路由注册表防护：关键端点必须真实挂载（防装饰器被误删导致 404）。
+
+    历史教训：M2（3214461）编辑 entities 端点时误删了 parse 的
+    @router.post 装饰器，POST /local-saves/{id}/parse 在 HEAD 上返回
+    FastAPI 默认 404，因真实集成测试在无 reader 环境整体跳过而未暴露，
+    直到 M3 真实集成测试才抓到。此测试不依赖 reader/存档，CI 必跑。
+    """
+    paths = {
+        "/api/health": {"GET"},
+        "/api/local-saves": {"GET"},
+        "/api/settings/paths": {"GET", "PUT"},
+        "/api/local-saves/import": {"POST"},
+        "/api/local-saves/{save_id}/inspect": {"GET"},
+        "/api/local-saves/{save_id}/mods": {"GET"},
+        "/api/local-saves/{save_id}/parse": {"POST"},
+        "/api/local-saves/{save_id}/entities": {"GET"},
+        "/api/local-saves/{save_id}/characters/{character_id}/titles": {"GET"},
+        "/api/saves/{save_id}": {"GET", "DELETE"},
+        "/api/saves/{save_id}/characters": {"GET"},
+        "/api/saves/{save_id}/characters/{character_id}": {"GET"},
+    }
+    registered: dict[str, set[str]] = {}
+    for route in app.routes:
+        if type(route).__name__ == "_IncludedRouter":
+            # FastAPI 新版把 include_router 封装为 _IncludedRouter，子路由在
+            # original_router.routes 且 path 不含 prefix（prefix 在 include_context）。
+            prefix = route.include_context.prefix or ""
+            for sub in route.original_router.routes:
+                path = prefix + getattr(sub, "path", "")
+                if path.startswith("/api/"):
+                    methods = set(getattr(sub, "methods", set()) or set())
+                    registered.setdefault(path, set()).update(methods)
+        else:
+            # FastAPI 0.136+ 直接把 include_router 的子路由拍平为 APIRoute，
+            # 同 path 的 GET/PUT（settings/paths）、GET/DELETE（saves/{id}）
+            # 是两条独立路由：这里必须合并方法集，不能覆盖，否则会漏报。
+            path = getattr(route, "path", "")
+            if path.startswith("/api/"):
+                methods = set(getattr(route, "methods", set()) or set())
+                registered.setdefault(path, set()).update(methods)
+    missing = []
+    for path, expected in paths.items():
+        methods = registered.get(path)
+        if methods is None:
+            missing.append(f"{path} 未注册")
+        elif not expected.issubset(methods):
+            missing.append(f"{path} 缺方法 {expected - methods}（现有 {methods}）")
+    assert missing == [], "关键路由缺失：\n" + "\n".join(missing)
+
+
+# -- M3 头衔与统治经历（列表摘要 / 档案 / titles 端点） -------------------------
+def test_list_summary_merges_title_bits(client, tmp_path):
+    """M3：人物列表摘要带 primaryTitle / highestTitleTier / isRuler（由 titles.json 反解）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters", params={"limit": 100})
+    items = {it["id"]: it for it in r.json()["items"]}
+    alice = items["1"]
+    assert alice["primaryTitle"]["id"] == "d_alpha"
+    assert alice["primaryTitle"]["name"] == "阿尔法公国"
+    assert alice["highestTitleTier"] == "duchy"
+    assert alice["isRuler"] is True
+    bob = items["2"]
+    assert bob["primaryTitle"] is None
+    assert bob["isRuler"] is False  # 仅有历史任期，非现任
+
+
+def test_ruler_only_filter_uses_title_holders(client, tmp_path):
+    """M3：rulerOnly 以 landed_titles 现任持有者为权威（Alice 是，Bob/Carol 不是）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters", params={"rulerOnly": True})
+    assert r.json()["total"] == 1
+    assert r.json()["items"][0]["id"] == "1"
+
+
+def test_profile_includes_titles_and_title_events(client, tmp_path):
+    """M3：人物档案含 titles[]（现任 + 历史任期）与 title_gain/loss 时间线事件。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters/1")
+    assert r.status_code == 200
+    p = r.json()
+    titles = {t["titleId"]: t for t in p["titles"]}
+    alpha = titles["d_alpha"]
+    assert alpha["isCurrent"] is True
+    assert alpha["start"] == "780.5.10"
+    assert alpha["end"] is None
+    assert alpha["sourcePath"] == "landed_titles/d_alpha"
+    # 现任主头衔任期起点 → succession（inferred）事件
+    kinds = {e["type"] for e in p["timeline"]}
+    assert "title_gain" in kinds
+    assert "succession" in kinds
+    for e in p["timeline"]:
+        if e["type"].startswith("title_"):
+            assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+
+
+def test_titles_endpoint_returns_periods(client, tmp_path):
+    """M3：/titles 端点返回契约 TitlePeriod[]，warnings 含扫描告警 + 头衔告警。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/local-saves/{sid}/characters/2/titles")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["characterId"] == "2"
+    assert body["titles"]  # 曾持 c_beta
+    beta = [t for t in body["titles"] if t["titleId"] == "c_beta"][0]
+    assert beta["start"] == "770.2.2"
+    assert beta["end"] == "790.3.3"
+    assert beta["isCurrent"] is False
+    # 不存在人物 → 空列表（不 404）
+    r2 = c.get(f"/api/local-saves/{sid}/characters/999999/titles")
+    assert r2.status_code == 200
+    assert r2.json()["titles"] == []
+
+
+def test_title_paths_do_not_leak_local_paths(client, tmp_path):
+    """M3 安全：titles / profile 响应中的 sourcePath 不含本地绝对路径（盘符/反斜杠）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    for url in (
+        f"/api/local-saves/{sid}/characters/1/titles",
+        f"/api/saves/{sid}/characters/1",
+    ):
+        r = c.get(url)
+        assert r.status_code == 200
+        data = r.json()
+        for value in _walk_strings(data):
+            if "Path" in value or "path" in value or value.startswith("landed_titles"):
+                assert "\\" not in value, f"响应泄露本地路径片段: {value}"
+                assert not value[:2].replace(":", "").isalnum() or ":" not in value[:2], (
+                    f"响应含盘符前缀: {value}"
+                )
+
+
+def _walk_strings(obj):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _walk_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_strings(v)
+    elif isinstance(obj, str):
+        yield obj

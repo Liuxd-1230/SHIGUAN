@@ -55,10 +55,11 @@ from app.services.game_def_loader import GameDefLoader
 from app.services.local_save_discovery import LocalSaveDiscoveryService
 from app.services.localization import LocalizationLoader
 from app.services.mod_resolver import ModResolver, read_launcher_playset
-from app.services.entity_index_builder import EntityIndexBuilder
+from app.services.entity_index_builder import EntityIndexBuilder, ReferenceResolver
 from app.services.save_registry import SaveRegistry, SaveStillWritingError
 from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
+from app.services.title_reign_extractor import TitleProfileIndex, build_title_events
 
 # Phase 2A.1 验证版本（占位 token 表针对此版本反推；新版本出现给兼容性提示）。
 VALIDATED_VERSION = "1.19.0.6"
@@ -74,6 +75,9 @@ _watcher_events: list[dict] = []
 _last_event_id: str | None = None
 _event_seq: int = 0
 _loc_cache: dict[tuple, LocalizationLoader] = {}
+# M3：头衔索引缓存（一次反解 titles.json，列表页/档案页/titles 端点复用）。
+# 值：(TitleProfileIndex, scanner_warnings) —— scanner_warnings 为 Rust 扫描告警。
+_title_index_cache: dict[tuple[str, str], tuple[TitleProfileIndex, list[str]]] = {}
 
 
 # -- 统一错误结构 -------------------------------------------------------------
@@ -152,6 +156,7 @@ def _on_watch_change(added, removed, changed) -> None:
             try:
                 _registry.register(s.path)
                 _session_manager.drop_save(save_id)
+                _drop_title_index(save_id)
             except Exception:  # noqa: BLE001
                 pass
     del _watcher_events[:-50]
@@ -165,6 +170,38 @@ def _build_localization(save_id: str, signature: str, resolved_mods: list) -> Lo
     loader = resolver.build_localization(resolved_mods=resolved_mods)
     _loc_cache[key] = loader
     return loader
+
+
+def _title_index(sess, save_id: str) -> tuple[TitleProfileIndex, list[str]]:
+    """构建（或复用）该存档的头衔索引：titles.json + 实体索引 + 本地化 → TitleProfileIndex。
+
+    返回 (index, scanner_warnings)。一次反解后按 (save_id, signature) 缓存；
+    单人物查询与列表页共享，绝不重复扫描 titles.json，也不重新 melt。
+    头衔名解析只依赖 title 实体（loc 键），无需 GameDefLoader，避免每次扫描游戏定义。
+    """
+    key = (save_id, sess.signature)
+    cached = _title_index_cache.get(key)
+    if cached is not None:
+        return cached
+    raw = _session_manager.titles(sess)
+    meta = _session_manager.meta(sess)
+    game_version = meta.get("game_version")
+    descriptors = _descriptors_from_meta(meta)
+    report = _mod_resolver().resolve(descriptors, game_version)
+    loader = _build_localization(save_id, sess.signature, report.required)
+    entity_raw = _session_manager.adapter.entities(sess.cache_dir)
+    entity_index = EntityIndexBuilder(game_def=None, loc=loader).build(entity_raw)
+    reference = ReferenceResolver(entity_index)
+    index = TitleProfileIndex(raw, loc=loader, resolver=reference)
+    scanner_warnings = list(raw.get("warnings") or [])
+    _title_index_cache[key] = (index, scanner_warnings)
+    return index, scanner_warnings
+
+
+def _drop_title_index(save_id: str) -> None:
+    for k in list(_title_index_cache.keys()):
+        if k[0] == save_id:
+            del _title_index_cache[k]
 
 
 def _ensure_session(save_id: str):
@@ -242,6 +279,7 @@ def put_settings(req: PathsSettings):
     except ValueError as exc:
         raise _fail(400, "invalid_dir", str(exc)) from exc
     _loc_cache.clear()
+    _title_index_cache.clear()
     return {"saved": saved}
 
 
@@ -469,6 +507,32 @@ def entities_endpoint(save_id: str):
     game_def.load()
     index = EntityIndexBuilder(game_def=game_def, loc=loader).build(raw)
     return index.model_dump(mode="json")
+
+
+@router.get("/local-saves/{save_id}/characters/{character_id}/titles")
+def character_titles_endpoint(save_id: str, character_id: str):
+    """M3 头衔与统治经历：从 titles.json（landed_titles 反解）聚合单角色 TitlePeriod[]。
+
+    现任头衔 isCurrent=True；过往任职为 history 连续持有段。名字解析：
+    存档直书可读名 → 实体索引 → 本地化 → key（不伪造）。无法命名的头衔
+    name=key、无 sourcePath 伪造。warnings 含 Rust 扫描告警 + 头衔冲突/推断告警。
+    """
+    _rec, sess = _ensure_session(save_id)
+    try:
+        index, scanner_warnings = _title_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+    periods = index.periods(character_id)
+    title_warnings = [w.message for w in index.warnings(character_id)]
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "titles": [p.model_dump() for p in periods],
+        "warnings": scanner_warnings + title_warnings,
+    }
+
+
+@router.post("/local-saves/{save_id}/parse")
 def parse_save_endpoint(save_id: str):
     rec, sess = _ensure_session(save_id)
     try:
@@ -480,9 +544,21 @@ def parse_save_endpoint(save_id: str):
     descriptors = _descriptors_from_meta(meta)
     report = _mod_resolver().resolve(descriptors, game_version)
     loader = _build_localization(save_id, sess.signature, report.required)
-    # 首屏一页样本（服务端分页，不一次下发全部人物）。
+    # 首屏一页样本（服务端分页，不一次下发全部人物）。M3：附带头衔摘要位。
     page = _session_manager.list_characters(sess, offset=0, limit=20)
-    samples = [to_summary(it, loader).model_dump() for it in page["items"]]
+    try:
+        title_index, _ = _title_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        title_index = None
+    if title_index is not None:
+        samples = [
+            to_summary(
+                it, loader, title_index.primary_bits(str(it.get("id")))
+            ).model_dump()
+            for it in page["items"]
+        ]
+    else:
+        samples = [to_summary(it, loader).model_dump() for it in page["items"]]
     char_count = int(meta.get("character_count") or 0)
     dead_count = int(meta.get("dead_character_count") or 0)
     # 游戏级数据（game_data）：只放真实可提取、不伪造的字段。
@@ -505,7 +581,7 @@ def parse_save_endpoint(save_id: str):
         "token_metrics": meta.get("token_metrics"),
         "caveats": [
             "faith/dynasty 在占位 token 表下为数值 id，无可读名（未接真实 token 表）。",
-            "头衔/领地地图当前不可用（占位表下 primary_title 已缺失）。",
+            "头衔归属已由 landed_titles 的 holder/history 反解（M3）；未本地化头衔以 key 展示。",
         ],
     }
     return {
@@ -581,6 +657,10 @@ def list_characters_endpoint(
     sort: Optional[str] = Query(None, pattern="^(name|birth|id)$"),
 ):
     _rec, sess = _ensure_session(save_id)
+    try:
+        title_index, _ = _title_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        title_index = None
     page = _session_manager.list_characters(
         sess,
         offset=offset,
@@ -591,9 +671,17 @@ def list_characters_endpoint(
         dynasty=dynasty,
         title=title,
         sort=sort,
+        ruler_ids=title_index.ruler_ids() if title_index is not None else None,
     )
     loader = _loc_cache.get((save_id, sess.signature))
-    items = [to_summary(it, loader).model_dump() for it in page["items"]]
+    items = [
+        to_summary(
+            it,
+            loader,
+            title_index.primary_bits(str(it.get("id"))) if title_index is not None else None,
+        ).model_dump()
+        for it in page["items"]
+    ]
     return {
         "saveId": save_id,
         "total": page["total"],
@@ -614,7 +702,42 @@ def character_profile_endpoint(save_id: str, character_id: str):
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
     loader = _loc_cache.get((save_id, sess.signature))
-    return to_profile(stub, loader).model_dump()
+    # M3：合并 landed_titles 反解的头衔（titles + 时间线事件 + 告警）。
+    title_periods: list = []
+    title_events: list = []
+    title_warnings: list = []
+    try:
+        title_index, _ = _title_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        title_index = None
+    if title_index is not None:
+        title_periods = title_index.periods(character_id)
+        bits = title_index.primary_bits(character_id)
+        name_key = stub.get("name") or ""
+        display_name = (
+            loader.resolve(name_key) if (loader and name_key) else name_key
+        )
+        primary_period = None
+        if bits.primary is not None:
+            primary_period = next(
+                (
+                    p
+                    for p in title_periods
+                    if p.isCurrent and p.titleId == bits.primary.id
+                ),
+                None,
+            )
+        title_events = build_title_events(
+            character_id, display_name, title_periods, primary_period
+        )
+        title_warnings = title_index.warnings(character_id)
+    return to_profile(
+        stub,
+        loader,
+        title_periods=title_periods,
+        title_events=title_events,
+        title_warnings=title_warnings,
+    ).model_dump()
 
 
 # -- 清理 ---------------------------------------------------------------------
@@ -624,6 +747,7 @@ def delete_save_endpoint(save_id: str):
     sig = rec.staged_signature if rec else None
     removed = _registry.remove(save_id)
     _session_manager.drop_save(save_id)
+    _drop_title_index(save_id)
     if sig:
         _loc_cache.pop((save_id, sig), None)
     return {"saveId": save_id, "removed": removed}

@@ -46,9 +46,9 @@ jobs:
         working-directory: apps/server
         run: python -m pytest -q
 
-  # —— Rust sidecar（ck3-reader）：格式化 / clippy 视为错误 / release 构建 ——
+  # —— Rust sidecar（ck3-reader）：格式化 / clippy 视为错误 / release 构建 / 单元测试 ——
   rust:
-    name: Rust fmt / clippy / build
+    name: Rust fmt / clippy / build / test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,6 +64,9 @@ jobs:
       - name: 构建（release）
         working-directory: tools/ck3-reader
         run: cargo build --release
+      - name: 单元测试（含 M3 头衔扫描）
+        working-directory: tools/ck3-reader
+        run: cargo test --release
 
   # —— 前端（Node）：类型检查 / lint / 测试 / 生产构建 ——
   web:

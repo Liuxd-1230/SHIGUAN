@@ -30,7 +30,8 @@ def test_adapter_inspect():
     assert raw["encoding"] == "Binary"
     assert raw["save_version"] == "15"
     assert raw["game_version"] == "1.19.0.6"
-    assert raw["character_count"] == 35078
+    # M1 起 character_count 含三容器：living 35078 + dead_unprunable 4781 + dead_prunable 4237
+    assert raw["character_count"] == 44096
     assert raw["mod_count"] == 33
     assert raw["unknown_token_count"] == 0
 
@@ -38,7 +39,7 @@ def test_adapter_inspect():
 def test_adapter_list_characters_full_index():
     a = Ck3ReaderAdapter()
     idx = a.list_characters(str(DEFAULT_TEST_SAVE))
-    assert len(idx) == 35078
+    assert len(idx) == 44096
     assert idx[0]["id"] == "6432"
 
 

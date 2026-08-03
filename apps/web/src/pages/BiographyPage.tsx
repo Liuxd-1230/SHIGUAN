@@ -4,6 +4,8 @@ import { useStore, IDLE_REQUEST, profileCacheKey, MOCK_SAVE_ID, type DataSource 
 import { useRoute, navigate, ROUTES } from "../lib/router";
 import { setActiveSaveId } from "../lib/realRepository";
 import { buildDraft, eventChapterMap } from "../lib/buildOutline";
+import { titleTierLabel } from "../lib/labels";
+import type { TitlePeriod } from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
 import PortraitFrame from "../components/PortraitFrame";
@@ -260,6 +262,10 @@ export default function BiographyPage() {
         </div>
       </MuseumSurface>
 
+      <div className="mt-6">
+        <TitlesPanel titles={profile.titles} />
+      </div>
+
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* 时间线 + 密度控制（移动端排正文之后） */}
         <section className="order-2 lg:order-1">
@@ -343,6 +349,83 @@ export default function BiographyPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+function periodText(p: TitlePeriod): string {
+  if (p.start && p.end) return `${p.start} – ${p.end}`;
+  if (p.start) return `${p.start} 起`;
+  if (p.end) return `至 ${p.end}`;
+  return "任期时间不详";
+}
+
+/** 头衔与统治面板（M3）：现任 + 历史任期，带等级/起止/证据出处，不伪造。 */
+export function TitlesPanel({ titles }: { titles: TitlePeriod[] }) {
+  if (!titles || titles.length === 0) {
+    return (
+      <MuseumSurface variant="raised" className="p-4">
+        <h2 className="font-serif text-lg font-bold text-ink-900">头衔与统治</h2>
+        <p className="mt-2 text-sm text-ink-500">
+          存档的 landed_titles 记录中未找到该人物的头衔（可能为无领地的宫廷角色）。
+        </p>
+      </MuseumSurface>
+    );
+  }
+  const current = titles.filter((t) => t.isCurrent);
+  const historical = titles.filter((t) => !t.isCurrent);
+  return (
+    <MuseumSurface variant="raised" className="p-4">
+      <h2 className="font-serif text-lg font-bold text-ink-900">头衔与统治</h2>
+      <p className="mt-1 text-xs text-ink-500">
+        由存档 landed_titles 的 holder/history 反解；未解析头衔以 key 原样展示。
+      </p>
+      {current.length > 0 && (
+        <div className="mt-3">
+          <h3 className="text-xs font-semibold tracking-wide text-ink-500">现任</h3>
+          <ul className="mt-1 space-y-1.5">
+            {current.map((t) => (
+              <li
+                key={`cur-${t.titleId}`}
+                className="rounded-lg border border-gold-500/50 bg-gold-500/5 px-3 py-2"
+              >
+                <span className="text-sm font-semibold text-ink-900">{t.name}</span>
+                {t.name === t.titleId && (
+                  <span className="ml-1.5 text-[11px] text-ink-400">（未解析）</span>
+                )}
+                <span className="ml-2 text-[11px] text-ink-500">
+                  {titleTierLabel(t.tier) ?? "等级不详"}
+                </span>
+                <span className="ml-2 text-[11px] text-ink-500">{periodText(t)}</span>
+                <span className="ml-1.5 text-[10px] text-ink-400">{t.sourcePath}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {historical.length > 0 && (
+        <div className="mt-3">
+          <h3 className="text-xs font-semibold tracking-wide text-ink-500">历史任期</h3>
+          <ul className="mt-1 space-y-1.5">
+            {historical.map((t) => (
+              <li
+                key={`his-${t.titleId}-${t.start ?? "?"}-${t.end ?? "?"}`}
+                className="rounded-lg border border-ink-400/40 bg-paper-100 px-3 py-2"
+              >
+                <span className="text-sm text-ink-900">{t.name}</span>
+                {t.name === t.titleId && (
+                  <span className="ml-1.5 text-[11px] text-ink-400">（未解析）</span>
+                )}
+                <span className="ml-2 text-[11px] text-ink-500">
+                  {titleTierLabel(t.tier) ?? "等级不详"}
+                </span>
+                <span className="ml-2 text-[11px] text-ink-500">{periodText(t)}</span>
+                <span className="ml-1.5 text-[10px] text-ink-400">{t.sourcePath}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </MuseumSurface>
   );
 }
 

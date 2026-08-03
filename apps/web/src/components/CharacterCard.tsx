@@ -7,6 +7,16 @@ function lifeSpan(birth?: string, death?: string, alive?: boolean): string {
   return `${b} – ${d}`;
 }
 
+/** 主头衔文案：未解析（resolved=false）时如实标出，不伪装成可读名。 */
+function primaryTitleText(summary: CharacterSummary): string {
+  const t = summary.primaryTitle;
+  if (!t) return "无头衔";
+  if (t.resolved === false) {
+    return `${t.name}（未解析）`;
+  }
+  return t.name;
+}
+
 export default function CharacterCard({
   summary,
   onClick,
@@ -14,7 +24,7 @@ export default function CharacterCard({
   summary: CharacterSummary;
   onClick: () => void;
 }) {
-  const title = summary.primaryTitle?.name ?? "无头衔";
+  const title = primaryTitleText(summary);
   return (
     <button
       type="button"

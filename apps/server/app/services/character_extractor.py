@@ -28,11 +28,13 @@ from models import (
     RelationshipPeriod,
     Sex,
     TimelineEvent,
+    TitlePeriod,
     TraitRecord,
     WarningSeverity,
 )
 
 from app.services.localization import LocalizationLoader
+from app.services.title_reign_extractor import TitleSummaryBits, _date_key
 
 
 def _entity(
@@ -210,9 +212,20 @@ def _build_timeline_and_evidence(
     return events, warnings
 
 
-def to_summary(stub: dict, loader: Optional[LocalizationLoader] = None) -> CharacterSummary:
+def to_summary(
+    stub: dict,
+    loader: Optional[LocalizationLoader] = None,
+    title_bits: Optional[TitleSummaryBits] = None,
+) -> CharacterSummary:
     name_key = stub.get("name") or ""
     name = loader.resolve(name_key) if (loader and name_key) else name_key
+    warn_count = len(stub.get("evidence_warnings", []) or [])
+    is_ruler = bool(stub.get("ruler", False))
+    if title_bits is not None:
+        # M3：由 landed_titles 反解的头衔摘要。isRuler 以“存在当前头衔”为权威补充
+        # 人物块的 landed_data 判定；头衔相关告警计入 evidenceWarningCount。
+        is_ruler = is_ruler or title_bits.isRuler
+        warn_count += title_bits.warningCount
     return CharacterSummary(
         id=str(stub.get("id")),
         name=name or name_key,
@@ -222,18 +235,29 @@ def to_summary(stub: dict, loader: Optional[LocalizationLoader] = None) -> Chara
         culture=_entity(stub.get("culture"), "culture", loader),
         faith=_entity(stub.get("faith"), "faith", loader),
         dynasty=_entity(stub.get("dynasty"), "dynasty", loader),
-        # 人物块中不存在 primary_title 字段（实测出现 0 次）；头衔归属须从
-        # landed_titles 的 holder/history 反解，属 Phase 2B M3 范围。
-        primaryTitle=None,
-        isRuler=bool(stub.get("ruler", False)),
+        # M3：主头衔由 landed_titles 的 holder/history 反解（见 TitleProfileIndex）。
+        primaryTitle=title_bits.primary if title_bits is not None else None,
+        highestTitleTier=title_bits.highestTier if title_bits is not None else None,
+        isRuler=is_ruler,
         isAlive=bool(stub.get("alive", True)),
         isPlayerDynasty=False,
-        evidenceWarningCount=len(stub.get("evidence_warnings", []) or []),
+        evidenceWarningCount=warn_count,
     )
 
 
-def to_profile(stub: dict, loader: Optional[LocalizationLoader] = None) -> CharacterProfile:
-    """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。"""
+def to_profile(
+    stub: dict,
+    loader: Optional[LocalizationLoader] = None,
+    title_periods: Optional[list[TitlePeriod]] = None,
+    title_events: Optional[list[TimelineEvent]] = None,
+    title_warnings: Optional[list[EvidenceWarning]] = None,
+) -> CharacterProfile:
+    """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。
+
+    M3：title_periods 为 landed_titles 反解的任期（CharacterProfile.titles）；
+    title_events 为头衔时间线事件（title_gain/loss/succession，均带 EvidenceRef）；
+    title_warnings 为头衔相关告警（冲突 / 多同级推断），合并进 evidenceWarnings。
+    """
     cid = str(stub.get("id"))
     name_key = stub.get("name") or ""
     name = loader.resolve(name_key) if (loader and name_key) else name_key
@@ -283,12 +307,20 @@ def to_profile(stub: dict, loader: Optional[LocalizationLoader] = None) -> Chara
         traits.append(
             TraitRecord(
                 id=str(t),
-                name=loader.resolve(t) if loader else str(t),
+                # 本地化查不到 → 回退原 id（不伪造名称，与 _entity_ref_for 一致）。
+                name=(loader.resolve(t) if loader else None) or str(t),
                 sourcePath=f"character/{cid}/trait_{t}",
             )
         )
 
     events, warnings = _build_timeline_and_evidence(stub, name or name_key)
+    timeline = list(events)
+    if title_events:
+        timeline.extend(title_events)
+    # 时间线按日期数值排序（未知日期排最后），保持各页/章节稳定顺序。
+    timeline.sort(key=lambda e: _date_key(e.date or ""))
+    if title_warnings:
+        warnings = list(warnings) + list(title_warnings)
 
     return CharacterProfile(
         id=cid,
@@ -300,7 +332,7 @@ def to_profile(stub: dict, loader: Optional[LocalizationLoader] = None) -> Chara
         culture=_entity(stub.get("culture"), "culture", loader),
         faith=_entity(stub.get("faith"), "faith", loader),
         traits=traits,
-        titles=[],  # 头衔须从 landed_titles 反解（Phase 2B M3）
+        titles=title_periods or [],  # M3：由 landed_titles 反解（见 TitleProfileIndex）
         residences=[],
         courtPositions=[],
         parents=parents,
@@ -314,6 +346,6 @@ def to_profile(stub: dict, loader: Optional[LocalizationLoader] = None) -> Chara
         imprisonments=[],
         travels=[],
         memories=[],
-        timeline=events,
+        timeline=timeline,
         evidenceWarnings=warnings,
     )

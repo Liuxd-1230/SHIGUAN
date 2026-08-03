@@ -112,6 +112,7 @@ SHIGUAN/
 - **人物摘要与完整档案分离**：`ParsedSave` 同时持有 `characterIndex: CharacterIndexEntry[]`（轻量摘要，供选择页）与 `profiles: Record<id, CharacterProfile>`（按需完整档案）。避免大型存档一次性生成全部完整 Profile。
 - **`CharacterSummary` / `CharacterIndexEntry`**：选择页用的摘要模型（id/name/sex/生卒/王朝/文化/信仰/主要头衔/最高头衔等级/是否统治者/是否在世/是否玩家王朝/肖像 key/证据告警计数）。
 - **证据引用 `EvidenceRef`**：`TimelineEvent.evidence: EvidenceRef[]`，每条时间线事件可关联一个或多个证据（id/sourceType/sourcePath/rawKey/description/confidence/relatedEventId），confirmed 事件可追溯具体证据，inferred 记录推断依据；不复制整段原始存档文本。
+- **头衔模型（Phase 2B M3 新增）**：`TitlePeriod`（titleId/name/tier/start/end/isCurrent/government/sourcePath）、`TitleTier`（`Enum`：barony/county/duchy/kingdom/empire/unknown）；`CharacterProfile.titles: TitlePeriod[]`、`CharacterSummary.primaryTitle/highestTitleTier/isRuler`。TS（`types.ts`）与 Python（`models.py`）严格同步；TS 联合类型在 Python 用 `Enum`（`str, Enum`）表达，运行时拒绝非法字符串。
 - **`BiographyChapterOutline` / `BiographyChapter` 的 `eventIds` 非空**：Python 侧运行时校验（Pydantic `min_length=1` + validator），每章必须至少引用一个时间线事件。
 - **Mock 包裹层 `FixtureEnvelope<T>` / `MockDataset`**：测试/Mock 数据用包裹结构（`isMock: true`、`source: "fixtures/mock"`、`schemaVersion`、`generatedFor`、`data`），Mock 元数据与真实 `CharacterProfile` 等严格隔离，绝不污染业务模型。
 - **集合字段安全默认**：Python 侧所有列表/字典字段均 `default_factory=list/dict`，TS 侧数组字段为必填（由调用方填充）。
@@ -226,4 +227,10 @@ class SaveParserAdapter(Protocol):
 
 **Phase 1C.1（验收修复与视觉收口）已完成**：补齐 `BiographyPage.test.tsx`（12 项，全量 Vitest **96 项**）、`swHandler.ts` 可测试离线导航 handler（13 项）；路由无障碍（title 随路由含人物名、切换人物焦点重入 main）；克制动效（墨线延伸 / 朱砂落印 / 时间线脉冲 / 章节 `whileInView` 淡入 / EvidencePanel 交叉淡入，reduced-motion 双重降级）；东方素材 WebP 化（PNG 约 6.49 MB → WebP 约 1.11 MB，CSS `image-set` 回退）并移出 4 张参考图至 `docs/design-reference/`；`ParsePage` 移除 eslint-disable 改 `useCallback` 并修 `exhaustive-deps`（`npm run lint` 零错误零警告）；清理临时产物 + 补 `.gitignore`；建立 `docs/ASSET_AUDIT.md` 素材审计表；经用户授权推送到公开远端。详见 `roadmap.md`。
 
-下一轮（Phase 2）见 `roadmap.md`。
+**Phase 2A（本地 CK3 存档库 · 解析器评估 · Mod 感知解析 MVP）已完成**：`tools/ck3-reader` Rust sidecar（ck3save 0.4.3 + jomini，MIT）melt 真实二进制 SAV0101；FastAPI 后端（`adapters/` `services/` `routers/saves.py`）；本地存档自动发现（Windows Known Folder，不硬编码）；目录监听（写入中不解析，`wait_until_stable`）；Mod 兼容报告；人物索引与按需 Profile（一次 melt、多次查询，`data/cache/<saveId>/<signature>/`）；前端双模式（后端不可用回退 Mock）。详见 `docs/phase2a-report.md`、`docs/parser-evaluation.md`。
+
+**Phase 2A.1（真实路由分页 / CI / 安全导入）已完成**：`POST /api/local-saves/import` 安全导入（净化文件名防路径穿越）；前端 `/saves/:saveId/characters` 真实分页路由（首屏一页、防抖搜索、取消过期请求）；GitHub Actions CI 四作业。详见 `docs/phase2a1-report.md`。
+
+**Phase 2B M1–M3（真实人物语义深化）已完成**：M1 反推真实 token + 重写 `scan_characters_full`（三容器 44096 人物）+ 字段真值；M2 实体索引 10 类 + `ReferenceResolver` 诚实解析 + `GET /local-saves/{id}/entities`；M3 头衔与统治经历 —— Rust `scan_titles`（19003 条，`titles.json`，Format A/B 双格式）、Python `TitleReignExtractor`/`TitleProfileIndex`（5230 名现任统治者、7423 人有头衔记录、`GET /local-saves/{id}/characters/{cid}/titles`）、`CharacterProfile.titles` + `title_gain`/`title_loss`/`succession` 时间线事件（全部带 EvidenceRef）、`CharacterSummary.primaryTitle/highestTitleTier/isRuler`、真实 token 表下中文头衔（`教宗国`/`幽蓟`/`拜占庭帝国`）。M3 连带修复：M2 误删 parse 路由装饰器（补回 + 路由注册表测试）、`game_version` 整词匹配、缓存 `reader_version` 门槛 + **二进制指纹门禁**（占位/真实 token 表构建互不复用缓存）。详见 `docs/phase2b-m3-report.md`。
+
+下一轮（Phase 2B M4+ / Phase 3）见 `roadmap.md`。

@@ -73,12 +73,13 @@
 - 真实存档 / 数据库 / 上传目录（`data/`、`*.ck3` 等）已被 `.gitignore` 忽略，不提交。
 - `.env` 被忽略；`.env.example` 不含真实密钥。
 
-## 7. 当前状态（Phase 0.5 契约收口 + 1A 工程骨架 + 1B 纵向流程打磨 + 1C 视觉/响应式/无障碍/PWA 收尾 + 1C.1 验收修复，均已完成）
+## 7. 当前状态（Phase 0.5 + 1A + 1B + 1C + 1C.1 + 2A + 2A.1 + 2B M1–M3，均已完成）
 
-已建立：数据契约（TS+Python 严格同步 + 契约测试）、四份 docs、`.env.example`、`.gitignore`、README、AGENTS、fixtures/mock 契约、TS 严格类型检查环境、前端工程骨架 `apps/web`（Vite+React+TS strict+Tailwind+Zustand+Framer Motion+PWA 安全缓存）；可运行的 Mock 纵向链路（选择页→传记页→时间线↔证据面板双向同步）；索引/档案按需加载；`validateProfileEnvelope` 运行时校验；基于 History API 的可靠路由；`MockParseService` 确定性解析状态机；东方数字史馆设计语言（通道化 Design Token + 共享组件库 + 四页面改造）；键盘可达性（skip-link / 焦点管理 / 44px 触控）、移动端单栏重排、Framer Motion `MotionConfig reducedMotion="user"` + CSS 媒体查询双重 reduced-motion；加载竞态修复（按人物的 `profileRequestStateById` + `requestId`）；`/design-lab` 视觉实验室；PWA 缓存策略纯函数 `swCachePolicy.ts`；ESLint 8 链路（`npm run lint` / `lint:fix`）；Vitest 前端测试 96 项（含 `BiographyPage.test.tsx` 12 项、`swHandler.test.ts` 13 项）。
+已建立：数据契约（TS+Python 严格同步 + 契约测试）、四份 docs、`.env.example`、`.gitignore`、README、AGENTS、fixtures/mock 契约、TS 严格类型检查环境、前端工程骨架 `apps/web`（Vite+React+TS strict+Tailwind+Zustand+Framer Motion+PWA 安全缓存）；可运行的 Mock 纵向链路（选择页→传记页→时间线↔证据面板双向同步）；索引/档案按需加载；`validateProfileEnvelope` 运行时校验；基于 History API 的可靠路由；`MockParseService` 确定性解析状态机；东方数字史馆设计语言（通道化 Design Token + 共享组件库 + 四页面改造）；键盘可达性（skip-link / 焦点管理 / 44px 触控）、移动端单栏重排、Framer Motion `MotionConfig reducedMotion="user"` + CSS 媒体查询双重 reduced-motion；加载竞态修复（按人物的 `profileRequestStateById` + `requestId`）；`/design-lab` 视觉实验室；PWA 缓存策略纯函数 `swCachePolicy.ts`；ESLint 8 链路（`npm run lint` / `lint:fix`）；Vitest 前端测试 117 项（含 `CharacterCard.test.tsx` 5 项、`TitlesPanel.test.tsx` 3 项、`BiographyPage.test.tsx` 12 项、`swHandler.test.ts` 13 项）。
+**后端（Phase 2A + 2A.1 + 2B）**：`tools/ck3-reader` Rust sidecar（ck3save 0.4.3 MIT，真实/占位 token 表由 `build.sh` 依 `CK3_IRONMAN_TOKENS` 决定，占位表随仓库、真实表用户自备不随分发）；FastAPI 后端（adapters/services/routers）；本地存档发现 + 目录监听 + Mod 兼容报告 + 安全导入 + 真实分页路由；人物索引/按需档案（一次 melt、多次查询，`data/cache/<saveId>/<signature>/`，`reader_version` + **二进制指纹门禁**防占位/真实 token 表构建交叉复用缓存）；M1 反推真实 token + 三容器 44096 人物；M2 实体索引 + `ReferenceResolver`（未命中 `name=原id` 不编造）；M3 头衔与统治经历（Rust `scan_titles` 19003 条 → Python `TitleProfileIndex`，5230 名现任统治者；`CharacterProfile.titles` + `title_gain/title_loss/succession` 事件全带 EvidenceRef；`CharacterSummary.primaryTitle/highestTitleTier/isRuler`；`GET /local-saves/{id}/characters/{cid}/titles`；真实 token 表下中文头衔如 `教宗国`/`幽蓟`）。测试基线：后端 pytest 147 项（含真实存档集成，无样本时 137 passed / 9 skipped）、契约 25、Rust 16 项（CI 已含 `cargo test --release`）、前端 117 项 + tsc + eslint + vite build 437 模块。
 **Phase 1C.1 收口**：东方素材 WebP 化（PNG 约 6.49 MB → WebP 约 1.11 MB，CSS `image-set` 回退）+ 移出 4 张参考图至 `docs/design-reference/`（不进 `dist`/`git`）；`ParsePage` 移除 eslint-disable 改 `useCallback` 并修 `exhaustive-deps`（`npm run lint` 零错误零警告）；`docs/ASSET_AUDIT.md` 素材审计表；经用户授权推送到公开远端。
-未建立：后端骨架（Phase 2）、真实解析/LLM、家族树/地点/导出（Phase 4）。
-下一轮见 `docs/roadmap.md` 的 Phase 2。
+未建立：真实 token 表下发的中文化收尾（M3.2 之后）、传记管线 LLM（Phase 3）、家族树/地点/导出（Phase 4）。
+下一轮见 `docs/roadmap.md` 的 Phase 2B M4+ 与 Phase 3。
 
 ## 8. 沟通风格
 

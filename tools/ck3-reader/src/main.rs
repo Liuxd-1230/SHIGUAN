@@ -228,6 +228,9 @@ struct InspectOutput {
     parse_ms: f64,
     token_metrics: TokenMetrics,
     token_source: TokenSourceInfo,
+    /// 写缓存的 reader 版本：Python 侧 _cache_valid 要求存在，
+    /// 旧版（无此字段）缓存在升级后自动失效重建。
+    reader_version: String,
 }
 
 /// 单人物在缓存 / melt 明文中的完整记录（Phase 2B M1 重写）。
@@ -471,24 +474,28 @@ fn detect_token_source(metrics: &TokenMetrics) -> TokenSourceInfo {
 }
 
 /// 从一行中按候选键提取字段值（先尝试带引号字符串，再尝试裸 token/数字/日期）。
+///
+/// **整词匹配**：trim 后行首键必须与候选全等，不能用子串 find——
+/// 否则 `save_game_version=15` 会误命中 `version`（K_GAME_VERSION），
+/// 把 game_version 填成存档格式版本 15 而非 "1.19.0.6"（真实存档实测踩坑）。
+/// meta_data 顶层字段都是 `key=value` 行，行首整词匹配安全且正确。
 fn extract_field(line: &str, keys: &[&str]) -> Option<String> {
-    for k in keys {
-        let pat = format!("{k}=");
-        if let Some(idx) = line.find(&pat) {
-            let rest = &line[idx + pat.len()..];
-            if let Some(stripped) = rest.strip_prefix('"')
-                && let Some(end) = stripped.find('"')
-            {
-                return Some(stripped[..end].to_string());
-            }
-            let v: String = rest
-                .chars()
-                .take_while(|c| !c.is_whitespace() && *c != '}' && *c != '{')
-                .collect();
-            if !v.is_empty() {
-                return Some(v);
-            }
-        }
+    let t = line.trim_start();
+    let eq = t.find('=')?;
+    let key = &t[..eq];
+    if !keys.contains(&key) {
+        return None;
+    }
+    let rest = &t[eq + 1..];
+    if let Some(stripped) = rest.strip_prefix('"') {
+        return stripped.find('"').map(|e| stripped[..e].to_string());
+    }
+    let v: String = rest
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '}' && *c != '{')
+        .collect();
+    if !v.is_empty() {
+        return Some(v);
     }
     None
 }
@@ -1098,6 +1105,371 @@ impl EntityAcc {
 ///
 /// 用「路径栈」定位：`path[i]` 是深度 i 处打开的块键。只在深度 < 4 时保留真实键
 /// （更深的层级用空串占位，仅用于维持深度），避免在 2700 万行上做无谓分配。
+// ----------------------------------------------------------------------------
+// M3：头衔与统治经历 —— 从 landed_titles 反向解析头衔归属与历史
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct TitleHistoryEntry {
+    date: String,
+    holder_id: Option<String>,
+    /// holder | created | destroyed | other
+    kind: String,
+}
+
+#[derive(Serialize)]
+struct TitleEntry {
+    key: String,
+    name: String,
+    /// save（存档内直书）/ key（看起来像未本地化的键）/ unresolved
+    name_source: String,
+    /// barony | county | duchy | kingdom | empire | unknown（由 key 前缀推导）
+    tier: String,
+    /// 当前持有者（顶层 holder 字段，仅当仍持有存在）
+    holder_id: Option<String>,
+    de_facto_liege_id: Option<String>,
+    history: Vec<TitleHistoryEntry>,
+}
+
+#[derive(Serialize)]
+struct TitlesOutput {
+    schema_version: u32,
+    reader_version: String,
+    scan_ms: f64,
+    title_count: usize,
+    titles: Vec<TitleEntry>,
+    warnings: Vec<String>,
+}
+
+/// 头衔等级由 key 前缀推导（CK3 约定；h_ 为历史帝号，按 empire 处理，属最佳推断）。
+fn title_tier(key: &str) -> &'static str {
+    match key.chars().next() {
+        Some('b') => "barony",
+        Some('c') => "county",
+        Some('d') => "duchy",
+        Some('k') => "kingdom",
+        Some('e') => "empire",
+        Some('h') => "empire",
+        _ => "unknown",
+    }
+}
+
+/// 头衔名来源：若 name 与 key 相同、或仅由 lowercase 字母数字下划线组成（像键），视为未本地化。
+fn title_name_source(name: &str, key: &str) -> &'static str {
+    if name == key {
+        return "key";
+    }
+    if let Some(c) = name.chars().next()
+        && c.is_ascii_lowercase()
+        && name.chars().all(|x| x.is_ascii_alphanumeric() || x == '_')
+    {
+        return "key";
+    }
+    "save"
+}
+
+/// 在 text 中定位内层 landed_titles 容器的内容（去掉外层花括号）。
+fn find_landed_titles_inner(text: &str) -> Option<&str> {
+    let first = text.find("landed_titles={")?;
+    let rest = &text[first + 1..];
+    let inner_off = rest.find("landed_titles={")?;
+    let inner = first + 1 + inner_off;
+    let open = inner + "landed_titles=".len();
+    let (block, _) = extract_balanced(text, open)?;
+    if block.len() >= 2 {
+        Some(&block[1..block.len() - 1])
+    } else {
+        None
+    }
+}
+
+/// 从一段文本里，从 open_idx（指向 '{'）起提取配平的花括号块，返回块与块后位置。
+fn extract_balanced(text: &str, open_idx: usize) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    if bytes.get(open_idx) != Some(&b'{') {
+        return None;
+    }
+    let mut depth = 0i64;
+    let mut i = open_idx;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((&text[open_idx..=i], i + 1));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// 提取顶层（深度 0）的 {…} 块列表。
+fn extract_top_level_blocks(s: &str) -> Vec<&str> {
+    let bytes = s.as_bytes();
+    let mut blocks = Vec::new();
+    let mut depth = 0i64;
+    let mut start: Option<usize> = None;
+    for i in 0..bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                if depth == 0 {
+                    start = Some(i);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(st) = start {
+                        blocks.push(&s[st..=i]);
+                    }
+                    start = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    blocks
+}
+
+/// 在 block 中查找独立键 key（前导为空白/‘{’/‘=’/行首），返回 ‘key=’ 之后（等号后）的位置。
+fn find_kv(block: &str, key: &str) -> Option<usize> {
+    let bytes = block.as_bytes();
+    let mut from = 0;
+    loop {
+        let idx = block[from..].find(key)? + from;
+        let prev_ok = idx == 0
+            || matches!(
+                bytes.get(idx - 1),
+                Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') | Some(b'{') | Some(b'=')
+            );
+        if prev_ok {
+            let after = idx + key.len();
+            let mut j = after;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'=' {
+                return Some(j + 1);
+            }
+        }
+        from = idx + key.len();
+    }
+}
+
+fn grab_quoted(block: &str, key: &str) -> Option<String> {
+    let pos = find_kv(block, key)?;
+    let s = &block[pos..];
+    let inner = s.strip_prefix('"')?;
+    inner.find('"').map(|e| inner[..e].to_string())
+}
+
+fn grab_num(block: &str, key: &str) -> Option<String> {
+    let pos = find_kv(block, key)?;
+    let s = &block[pos..];
+    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(digits)
+    }
+}
+
+/// 在 s 的 i 位置尝试解析 YYYY.MM.DD，返回 (日期串, 日期后位置)。
+fn parse_date_at(s: &str, i: usize) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    let mut j = i;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == i || j >= b.len() || b[j] != b'.' {
+        return None;
+    }
+    let d1 = &s[i..j];
+    j += 1;
+    let m0 = j;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == m0 || j >= b.len() || b[j] != b'.' {
+        return None;
+    }
+    let d2 = &s[m0..j];
+    j += 1;
+    let d0 = j;
+    while j < b.len() && b[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == d0 {
+        return None;
+    }
+    let d3 = &s[d0..j];
+    Some((format!("{}.{}.{}", d1, d2, d3), j))
+}
+
+/// 由日期串生成可排序的 (年,月,日) 键（CK3 日期未零填充，必须数值排序）。
+fn ck3_date_key(s: &str) -> (i64, i64, i64) {
+    let p: Vec<&str> = s.split('.').collect();
+    if p.len() == 3 {
+        (
+            p[0].parse().unwrap_or(0),
+            p[1].parse().unwrap_or(0),
+            p[2].parse().unwrap_or(0),
+        )
+    } else {
+        (0, 0, 0)
+    }
+}
+
+fn read_token(s: &str, pos: usize) -> Option<String> {
+    let b = s.as_bytes();
+    let mut j = pos;
+    while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
+        j += 1;
+    }
+    let start = j;
+    while j < b.len() && !b[j].is_ascii_whitespace() && b[j] != b'}' && b[j] != b'"' {
+        j += 1;
+    }
+    if j > start {
+        Some(s[start..j].to_string())
+    } else {
+        None
+    }
+}
+
+/// 解析单个头衔块的 history 内容，提取每次持有者变更。
+fn parse_title_history(inner: &str) -> Vec<TitleHistoryEntry> {
+    let bytes = inner.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some((date, after_date)) = parse_date_at(inner, i)
+            && after_date < inner.len()
+            && bytes[after_date] == b'='
+        {
+            let vstart = after_date + 1;
+            if vstart < inner.len() && bytes[vstart] == b'{' {
+                // Format B：date={ type=... holder=... }
+                if let Some((blk, end)) = extract_balanced(inner, vstart) {
+                    let t = find_kv(blk, "type").and_then(|p| read_token(blk, p));
+                    let holder = find_kv(blk, "holder").and_then(|p| {
+                        let ds: String = blk[p..]
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        if ds.is_empty() { None } else { Some(ds) }
+                    });
+                    let kind = match t.as_deref() {
+                        Some("created") => "created",
+                        Some("destroyed") => "destroyed",
+                        _ => "other",
+                    };
+                    out.push(TitleHistoryEntry {
+                        date,
+                        holder_id: holder,
+                        kind: kind.to_string(),
+                    });
+                    i = end;
+                    continue;
+                }
+            } else {
+                // Format A：date=HOLDER_ID
+                let ds: String = inner[vstart..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if !ds.is_empty() {
+                    out.push(TitleHistoryEntry {
+                        date,
+                        holder_id: Some(ds),
+                        kind: "holder".to_string(),
+                    });
+                }
+                let step = inner[vstart..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .count();
+                i = vstart + step;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.sort_by(|a, b| ck3_date_key(&a.date).cmp(&ck3_date_key(&b.date)));
+    out
+}
+fn parse_title_block(block: &str) -> Option<TitleEntry> {
+    let key = grab_quoted(block, "key")?;
+    // holder / de_facto_liege 只应取自 history 块**之前**的顶层字段：
+    // history 内（Format B 的 date={type=created holder=ID}）也会出现 holder=，
+    // 若顶层无现任持有者，全块搜索会误抓历史 holder。
+    let history_off = block.find("history={").unwrap_or(block.len());
+    let head = &block[..history_off];
+    let holder = grab_num(head, "holder");
+    let liege = grab_num(head, "de_facto_liege");
+    let name = block
+        .find("title_name_data={")
+        .and_then(|off| {
+            let open = off + "title_name_data=".len();
+            extract_balanced(block, open).and_then(|(nd, _)| grab_quoted(nd, "name"))
+        })
+        .unwrap_or_else(|| key.clone());
+    let history = block
+        .find("history={")
+        .and_then(|off| {
+            let open = off + "history=".len();
+            extract_balanced(block, open).map(|(b, _)| &b[1..b.len() - 1])
+        })
+        .map(parse_title_history)
+        .unwrap_or_default();
+    let name_source = title_name_source(&name, &key).to_string();
+    let tier = title_tier(&key).to_string();
+    Some(TitleEntry {
+        key: key.clone(),
+        name,
+        name_source,
+        tier,
+        holder_id: holder,
+        de_facto_liege_id: liege,
+        history,
+    })
+}
+
+fn scan_titles(text: &str) -> TitlesOutput {
+    let started = Instant::now();
+    let mut titles = Vec::new();
+    let mut warnings = Vec::new();
+    match find_landed_titles_inner(text) {
+        Some(inner) => {
+            for block in extract_top_level_blocks(inner) {
+                if let Some(entry) = parse_title_block(block) {
+                    titles.push(entry);
+                }
+            }
+        }
+        None => {
+            warnings.push("container_not_found: landed_titles.landed_titles 未找到".into());
+        }
+    }
+    let scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+    TitlesOutput {
+        schema_version: 1,
+        reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        scan_ms,
+        title_count: titles.len(),
+        titles,
+        warnings,
+    }
+}
+
 fn scan_entities(text: &str) -> EntitiesOutput {
     let started = Instant::now();
     let mut acc = EntityAcc::default();
@@ -1514,6 +1886,7 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
         parse_ms: started.elapsed().as_secs_f64() * 1000.0,
         token_metrics,
         token_source,
+        reader_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     write_json(cache_dir.join("meta.json"), &meta)?;
     write_json(
@@ -1526,6 +1899,10 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
     let entity_total: usize = entities.kinds.values().map(|k| k.count).sum();
     let entity_warnings = entities.warnings.len();
     write_json_compact(cache_dir.join("entities.json"), &entities)?;
+
+    // titles.json（M3 头衔与统治经历：每头衔的 key / 本地化名 / 等级 / 当前持有者 / history）
+    let titles = scan_titles(&text);
+    write_json_compact(cache_dir.join("titles.json"), &titles)?;
 
     // characters.ndjson + character-offsets.json
     let ndjson_path = cache_dir.join("characters.ndjson");
@@ -1578,6 +1955,18 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
         melted.len(),
         meta.parse_ms
     );
+    // 向 stdout 输出版本化 JSON 结果：adapter 以“非空合法 JSON”校验 prepare 成功
+    // （此前仅 eprintln 摘要到 stderr，导致冷缓存首次 prepare 在 Python 侧误报
+    // “输出非 JSON”而 500；缓存文件其实已写好，第二次访问才会成功——修复后首次即成功）。
+    print_raw(
+        &serde_json::json!({
+            "ok": true,
+            "character_count": character_count,
+            "entity_count": entity_total,
+            "melted_bytes": melted.len(),
+        })
+        .to_string(),
+    )?;
     Ok(())
 }
 
@@ -1621,6 +2010,16 @@ fn cmd_entities(cache_dir: &Path) -> Result<(), String> {
     let p = cache_dir.join("entities.json");
     let text = fs::read_to_string(&p)
         .map_err(|e| format!("读取 entities.json 失败（缓存可能不存在）: {e}"))?;
+    print_raw(&text)
+}
+
+/// 读取 prepare 生成的 titles.json（头衔归属与统治经历，不重新 melt）。
+///
+/// 正常链路里 Python 侧直接读缓存文件；这个子命令用于人工排查与 CI 冒烟。
+fn cmd_titles(cache_dir: &Path) -> Result<(), String> {
+    let p = cache_dir.join("titles.json");
+    let text = fs::read_to_string(&p)
+        .map_err(|e| format!("读取 titles.json 失败（缓存可能不存在，请先 prepare）: {e}"))?;
     print_raw(&text)
 }
 
@@ -1728,6 +2127,7 @@ fn cmd_inspect(path: &Path) -> Result<(), String> {
         parse_ms: started.elapsed().as_secs_f64() * 1000.0,
         token_metrics,
         token_source,
+        reader_version: env!("CARGO_PKG_VERSION").to_string(),
     };
     print_json(&out)
 }
@@ -2205,6 +2605,7 @@ fn main() {
     if !path.exists()
         && cmd != "meta"
         && cmd != "entities"
+        && cmd != "titles"
         && cmd != "characters"
         && cmd != "character"
     {
@@ -2218,6 +2619,7 @@ fn main() {
         }
         "meta" => cmd_meta(path),
         "entities" => cmd_entities(path),
+        "titles" => cmd_titles(path),
         "characters" => {
             let (offset, limit, query, _) = parse_flags(&args[3..]);
             cmd_characters(path, offset, limit, &query)
@@ -2780,5 +3182,146 @@ dynasties={
             Some(EKind::CourtPositionType)
         );
         assert_eq!(classify_container(&["unknown".into(), "x".into()]), None);
+    }
+
+    // ========================================================================
+    // 测试：M3 头衔与统治经历扫描器
+    // —— 直接用 melt 明文片段喂 scan_titles，验证容器定位 / 头衔 key / 等级推导 /
+    // 头衔名来源判定 / 当前持有者 / 宗主 / history 双格式(Format A: date=ID；
+    // Format B: date={type=created/destroyed holder=ID}) / 按日期数值排序 /
+    // 缺失容器告警。不依赖真实存档，也不依赖 CK3_IRONMAN_TOKENS 环境变量。
+    // ========================================================================
+    const SAMPLE_TITLES: &str = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="k_papal_state"
+      holder=5371
+      de_facto_liege=123
+      date=752.3.22
+      title_name_data={
+        name="教宗国"
+        adj="教宗国"
+      }
+      history={
+        30.1.1=26
+        64.10.13=38
+        311.12.3={
+          type=destroyed
+        }
+      }
+    }
+    1={
+      key="e_byzantium"
+      date=867.1.1
+      title_name_data={
+        name="东罗马帝国"
+      }
+      history={
+        867.1.1=5371
+        900.5.20={
+          type=created
+          holder=9999
+        }
+      }
+    }
+    2={
+      key="h_roman_empire"
+      title_name_data={
+        name="罗马帝国"
+      }
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn scan_titles_finds_titles_and_derives_tier() {
+        let out = scan_titles(SAMPLE_TITLES);
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        assert_eq!(out.title_count, 3);
+        let papal = out
+            .titles
+            .iter()
+            .find(|t| t.key == "k_papal_state")
+            .unwrap();
+        assert_eq!(papal.tier, "kingdom");
+        assert_eq!(papal.name, "教宗国");
+        assert_eq!(papal.name_source, "save");
+        assert_eq!(papal.holder_id.as_deref(), Some("5371"));
+        assert_eq!(papal.de_facto_liege_id.as_deref(), Some("123"));
+        let byz = out.titles.iter().find(|t| t.key == "e_byzantium").unwrap();
+        assert_eq!(byz.tier, "empire");
+        assert_eq!(byz.holder_id, None);
+        assert_eq!(byz.de_facto_liege_id, None);
+        // h_ 历史帝号按 empire 处理（最佳推断）
+        let roman = out
+            .titles
+            .iter()
+            .find(|t| t.key == "h_roman_empire")
+            .unwrap();
+        assert_eq!(roman.tier, "empire");
+    }
+
+    #[test]
+    fn scan_titles_parses_history_format_a_and_b_sorted() {
+        let out = scan_titles(SAMPLE_TITLES);
+        let papal = out
+            .titles
+            .iter()
+            .find(|t| t.key == "k_papal_state")
+            .unwrap();
+        // Format A: 30.1.1=26, 64.10.13=38 ；Format B: 311.12.3 destroyed
+        assert_eq!(papal.history.len(), 3);
+        assert_eq!(papal.history[0].date, "30.1.1");
+        assert_eq!(papal.history[0].holder_id.as_deref(), Some("26"));
+        assert_eq!(papal.history[0].kind, "holder");
+        assert_eq!(papal.history[1].date, "64.10.13");
+        assert_eq!(papal.history[1].holder_id.as_deref(), Some("38"));
+        assert_eq!(papal.history[1].kind, "holder");
+        // 已按日期数值排序：311.12.3 在最后（destroyed 无 holder）
+        assert_eq!(papal.history[2].date, "311.12.3");
+        assert_eq!(papal.history[2].kind, "destroyed");
+        assert_eq!(papal.history[2].holder_id, None);
+
+        let byz = out.titles.iter().find(|t| t.key == "e_byzantium").unwrap();
+        // 867.1.1=5371 (A) 在前，900.5.20 created (B) 在后
+        assert_eq!(byz.history.len(), 2);
+        assert_eq!(byz.history[0].date, "867.1.1");
+        assert_eq!(byz.history[0].kind, "holder");
+        assert_eq!(byz.history[1].date, "900.5.20");
+        assert_eq!(byz.history[1].kind, "created");
+        assert_eq!(byz.history[1].holder_id.as_deref(), Some("9999"));
+    }
+
+    #[test]
+    fn scan_titles_name_source_key_when_unlocalized() {
+        let sample = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="c_rome"
+      title_name_data={
+        name=c_rome
+      }
+    }
+  }
+}
+"#;
+        let out = scan_titles(sample);
+        let t = &out.titles[0];
+        assert_eq!(t.name_source, "key");
+        assert_eq!(t.tier, "county");
+    }
+
+    #[test]
+    fn scan_titles_warns_when_container_missing() {
+        let out = scan_titles("version=1.19.0.6\ncharacter_database={ }");
+        assert_eq!(out.title_count, 0);
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("container_not_found"))
+        );
     }
 }

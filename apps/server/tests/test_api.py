@@ -98,7 +98,9 @@ def test_inspect(real_save_id):
     assert b["encoding"] == "Binary"
     assert b["game_version"] == "1.19.0.6"
     assert b["mod_count"] == 33
-    assert b["character_count"] == 35078
+    # M1 起 character_count=44096（living 35078 + dead_unprunable 4781 + dead_prunable 4237）。
+    assert b["character_count"] == 44096
+    assert b["dead_character_count"] == 9018
 
 
 @pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
@@ -116,7 +118,7 @@ def test_parse_and_characters(real_save_id):
     r = client.post(f"/api/local-saves/{real_save_id}/parse")
     assert r.status_code == 200
     body = r.json()
-    assert body["character_count"] == 35078
+    assert body["character_count"] == 44096
     assert body["mod_count"] == 33
     assert "game_data" in body
     assert "localization" in body
@@ -127,7 +129,7 @@ def test_parse_and_characters(real_save_id):
     )
     assert r2.status_code == 200
     page = r2.json()
-    assert page["total"] == 35078
+    assert page["total"] == 44096
     assert len(page["items"]) == 10
     assert page["items"][0]["id"] == "6432"
     # 单人物档案
@@ -138,6 +140,35 @@ def test_parse_and_characters(real_save_id):
     assert prof["id"] == cid
     # 文化字段：占位 token 表下为字符串键或 token-id（不崩溃、不伪造）
     assert prof["culture"] is not None
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_character_titles(real_save_id):
+    """M3 真实存档集成：titles 端点返回契约 TitlePeriod[]，现任头衔 isCurrent=True。"""
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    # 教宗国现任持有者 5371（真实存档 k_papal_state holder=5371）
+    r2 = client.get(f"/api/local-saves/{real_save_id}/characters/5371/titles")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["characterId"] == "5371"
+    assert isinstance(body["titles"], list)
+    assert len(body["titles"]) > 0
+    papal = [t for t in body["titles"] if t["titleId"] == "k_papal_state"]
+    assert len(papal) >= 1
+    current = [t for t in papal if t.get("isCurrent")]
+    assert len(current) == 1
+    assert current[0]["name"] == "教宗国"
+    assert current[0]["tier"] == "kingdom"
+    assert current[0]["start"] == "752.3.22"
+    assert current[0]["end"] is None
+    # 契约字段齐全
+    for t in body["titles"]:
+        assert "titleId" in t and "name" in t
+    # 不存在的人物 → 空列表（不 404：头衔列表本身可为空）
+    r3 = client.get(f"/api/local-saves/{real_save_id}/characters/99999999/titles")
+    assert r3.status_code == 200
+    assert r3.json()["titles"] == []
 
 
 @pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")

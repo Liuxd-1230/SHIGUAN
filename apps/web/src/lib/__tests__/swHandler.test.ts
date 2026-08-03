@@ -34,14 +34,15 @@ function fakeCaches(initial: Record<string, Response> = {}) {
   } as unknown as CacheStorage;
 }
 
-/** 用 Proxy 强制响应 type（真实 Response.type 只读，无法直接赋值）。 */
+/**
+ * 强制响应 type（真实 Response.type 是原型只读 getter）。
+ * 不能用 Proxy 包装：Response 方法（如 clone）依赖私有字段 #state，
+ * Proxy 作为 this 会抛 “Cannot read private member #state”。改为在实例上
+ * 用 defineProperty 遮蔽原型 getter，保持真实 Response 实例语义。
+ */
 function withType(r: Response, type: string): Response {
-  return new Proxy(r, {
-    get(target, prop) {
-      if (prop === "type") return type;
-      return Reflect.get(target, prop);
-    },
-  });
+  Object.defineProperty(r, "type", { value: type, configurable: true });
+  return r;
 }
 
 function basicResponse(body = "<html></html>"): Response {

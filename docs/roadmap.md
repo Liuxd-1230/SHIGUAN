@@ -179,7 +179,32 @@
 
 ---
 
-## Phase 2B —— 后续（真实 token 中文化 / 传记管线 / 地图家族树）
+## Phase 2B —— 真实人物语义深化（M1–M3 已完成）
+
+> Phase 2B 在 Phase 2A（后端 + 真实解析 MVP）之上把人物语义做深：
+> 反推真实 token、修复人物字段提取（M1）、实体索引 + 引用解析（M2）、
+> 头衔与统治经历（M3）。真实存档 1.19.0.6 三方交叉验证一致。
+
+完成项：
+- ✅ M1（#117，commit `fa1dfd2`）：反推真实 token（修正 4 个错误假设）+ 重写 `scan_characters_full`（多容器 `living`/`dead_unprunable`/`dead_prunable` = 44096 人物、反推父母、traits/sex/spouse 真值）+ 诊断子命令四方修复 + 独立 Python `expect.py` 三方交叉验证一致。详见 `docs/character-field-research.md`。
+- ✅ M2（#118，commit `3214461`）：实体索引 10 类（`entities.json`，内部键未本地化）+ `ReferenceResolver` 诚实解析（未命中 name=原id、不编造）+ `TokenSourceInfo`/`detect_token_source` 兼容性自报（`enum_resolved` 才是枚举翻译指标）；Python `GameDefLoader`/`EntityIndexBuilder`/`ReferenceResolver`；`GET /local-saves/{id}/entities`。契约 25。
+- ✅ M3（#119，本提交）：头衔与统治经历 —— Rust `scan_titles`（`titles.json`：key/名/等级/现任持有者/history，Format A `date=ID` 与 Format B `date={type=... holder=ID}` 双格式）；Python `TitleReignExtractor`（现任头衔 `isCurrent=True`、过往任职段聚合、名字解析 存档直书→实体索引→本地化→key 不伪造）；`GET /local-saves/{id}/characters/{cid}/titles`；真实存档实测教宗国现任持有者 5371（start 752.3.22）。
+- ✅ M3 连带修复（真实集成测试暴露的回归）：M2 误删 `POST /local-saves/{id}/parse` 装饰器（补回 + 新增 `test_critical_routes_registered` 路由注册表防护）；`extract_field` 子串匹配把 `save_game_version=15` 误命中 `version`（改整词匹配，game_version 恢复 "1.19.0.6"）；trait 本地化查不到回退原 id（不伪造）；缓存 meta.json 增加 `reader_version` 门槛 + **二进制指纹门禁**（占位/真实 token 表构建互不复用缓存，防静默 25 字节空数据）；test_api 的 35078→44096 断言同步。
+- ⚠️ 边界：`enum_resolved` 仅在 literal_key（明文存档）为 true；真实 token 表下字段名可读但 enum 值（faith/dynasty 等）仍为数字 id，中文化需本地化映射（M3.2 之后）。地图 / 家族树 / LLM 传记正文未做。
+
+### 本轮（Phase 2B M3）验证结果
+
+- Rust：`cargo fmt --all -- --check` 0 / `cargo clippy --release -- -D warnings` 0 / `cargo test --release` **16 passed**（M2 12 + M3 titles 4）/ `bash build.sh`（真实 token 表）构建成功。
+- 契约 `save-schema`：**25 passed**（TitlePeriod/TitleTier 双端一致）。
+- 后端 pytest：无真实存档 **137 passed / 9 skipped**；真实存档（`SHIGUAN_TEST_SAVE`）**147 passed / 0 skipped**（含 `test_character_titles`、`test_adapter_*`、二进制指纹门禁测试）。
+- 前端：`tsc --noEmit` 0 错 / `npm run lint` 0 错 0 警告 / `vitest` **117 passed**（新增 `CharacterCard` 5 项、`TitlesPanel` 3 项）/ `vite build` **437 模块**成功。
+- CI：`.github/workflows/ci.yml` rust 作业新增 `cargo test --release`（M3 的 16 项 Rust 测试进入 CI）。
+- 真实存档实测：`titles.json` **19003 条**（empire 128 / kingdom 401 / duchy 1205 / county 4811 / barony 11297 / unknown 1161）；**5230** 名现任统治者、**7423** 人有头衔记录；`primary_title_inferred` 0 例、`title_holder_conflict` 18 例；样本 6441（王国 primary 幽蓟，8 段）、4918（已故皇帝，3 头衔 742.7.1→743.11.2，6 条 gain/loss 全 `confirmed` 带证据，0 缺证据）、5371（教宗国，start 752.3.22）。
+- 详细报告：`docs/phase2b-m3-report.md`。
+
+---
+
+## Phase 2B 剩余项（真实 token 中文化 / 传记管线 / 地图家族树）
 
 > Phase 2 的「后端 + 真实解析 MVP」已在 Phase 2A 完成（见上）。本节为 Phase 2B 及以后剩余项。
 

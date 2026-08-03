@@ -88,14 +88,76 @@ class SessionManager:
     def cache_dir_for(self, save_id: str, signature: str) -> Path:
         return self.cache_root / self._safe_component(save_id) / self._safe_component(signature)
 
+    # -- 二进制指纹（M3.2）：缓存归属同一份 reader 二进制才可复用 -----------------
+    # reader_version 只含 Cargo 版本（如 "0.1.0"），无法区分占位/真实 token 表构建：
+    # 若用占位表二进制 prepare 写出的缓存被真实表二进制复用，会静默拿到 25 字节空
+    # 数据（landed_titles 等容器 "找不到"）。marker 记录二进制自身指纹（路径/尺寸/
+    # 修改时间），跨构建（尺寸/时间戳变化）一律判无效重建，绝不静默降级。
+    @staticmethod
+    def _marker_path_for(cache_root: Path) -> Path:
+        return cache_root / "reader-binary.json"
+
+    @staticmethod
+    def _binary_fingerprint(adapter_obj: object) -> Optional[dict]:
+        path = getattr(adapter_obj, "path", None) or getattr(adapter_obj, "binary", None)
+        if not path:
+            return None  # 测试用 FakeAdapter 无真实二进制，不做指纹拦截
+        try:
+            st = Path(path).stat()
+        except OSError:
+            return None
+        return {"path": str(Path(path)), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+
+    def _cache_marker_valid(self) -> bool:
+        """当前 reader 二进制指纹与最近一次 prepare 记录的指纹一致才可复用缓存。
+
+        无真实二进制（FakeAdapter）时跳过；有二进制但无 marker（新装/历史遗留）→
+        判无效，由本次 prepare 重建并写入 marker。
+        """
+        fp = self._binary_fingerprint(self.adapter)
+        if fp is None:
+            return True
+        marker = self._marker_path_for(self.cache_root)
+        try:
+            recorded = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return recorded == fp
+
+    def _write_marker(self) -> None:
+        fp = self._binary_fingerprint(self.adapter)
+        if fp is None:
+            return
+        try:
+            self._marker_path_for(self.cache_root).write_text(
+                json.dumps(fp), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
     def _cache_valid(self, cache_dir: Path) -> bool:
-        """磁盘缓存是否完整可用（重启后可复用，不必重新 melt）。"""
-        return (
+        """磁盘缓存是否完整可用（重启后可复用，不必重新 melt）。
+
+        要求 meta.json 含 reader_version：旧版 reader（M3.1 之前）写的缓存无此字段，
+        reader 行为变更（如 game_version 提取修正）后旧缓存语义已过时，必须失效重建。
+        """
+        if not (
             cache_dir.is_dir()
             and (cache_dir / "meta.json").is_file()
             and (cache_dir / "characters.ndjson").is_file()
             and (cache_dir / "character-offsets.json").is_file()
-        )
+            and (cache_dir / "entities.json").is_file()
+            and (cache_dir / "titles.json").is_file()
+        ):
+            return False
+        try:
+            meta = json.loads((cache_dir / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        if not meta.get("reader_version"):
+            return False
+        # M3.2：同一份 reader 二进制（含同一 token 表构建）产生的缓存才可复用。
+        return self._cache_marker_valid()
 
     def prepare(self, save_id: str, signature: str, staging_path: str | Path) -> ParseSession:
         """一次 melt 并建立 ParseSession。同一 (save_id, signature) 只 melt 一次。
@@ -127,6 +189,8 @@ class SessionManager:
             # 真正 melt 一次（adapter.prepare 内部调用 Rust `prepare`）。
             self.adapter.prepare(staging_path, cache_dir)
             self.prepare_calls += 1
+            # M3.2：记录本次使用的 reader 二进制指纹，供重启后判断缓存归属。
+            self._write_marker()
             sess = ParseSession(save_id, signature, cache_dir)
             sess.load_index()
             # 清理同一 save_id 的旧签名缓存目录，避免磁盘无限增长。
@@ -150,6 +214,10 @@ class SessionManager:
     def meta(self, sess: ParseSession) -> dict:
         return self.adapter.meta(sess.cache_dir)
 
+    def titles(self, sess: ParseSession) -> dict:
+        """读取该会话的 titles.json（M3 头衔与统治经历，不重新 melt）。"""
+        return self.adapter.titles(sess.cache_dir)
+
     def list_characters(
         self,
         sess: ParseSession,
@@ -161,11 +229,16 @@ class SessionManager:
         dynasty: Optional[str] = None,
         title: Optional[str] = None,
         sort: Optional[str] = None,
+        ruler_ids: Optional[set[str]] = None,
     ) -> dict:
         """在内存索引上做筛选 + 分页（不重新 melt）。
 
         title 参数：占位 token 表下头衔未提取，无法按头衔过滤；接受该参数但恒为
         “全部通过”，并在 items 中保留 title_hint=None（诚实：不伪造头衔过滤）。
+
+        ruler_ids：M3 由 landed_titles 反解出的“当前持有头衔”人物 id 集合。
+        提供时 ruler_only 用它判定（比仅看人物块 landed_data 更完整，含名义头衔）；
+        未提供则退回旧行为（人物块 ruler 字段）。
         """
         recs = sess.records
         needle = (q or "").strip().lower()
@@ -173,8 +246,12 @@ class SessionManager:
         for r in recs:
             if needle and needle not in json.dumps(r, ensure_ascii=False).lower():
                 continue
-            if ruler_only and not r.get("ruler"):
-                continue
+            if ruler_only:
+                if ruler_ids is not None:
+                    if str(r.get("id")) not in ruler_ids:
+                        continue
+                elif not r.get("ruler"):
+                    continue
             if alive_only and not r.get("alive", True):
                 continue
             if dynasty is not None and str(r.get("dynasty")) != str(dynasty):
