@@ -1403,7 +1403,7 @@ fn parse_title_history(inner: &str) -> Vec<TitleHistoryEntry> {
         }
         i += 1;
     }
-    out.sort_by(|a, b| ck3_date_key(&a.date).cmp(&ck3_date_key(&b.date)));
+    out.sort_by_key(|a| ck3_date_key(&a.date));
     out
 }
 fn parse_title_block(block: &str) -> Option<TitleEntry> {
