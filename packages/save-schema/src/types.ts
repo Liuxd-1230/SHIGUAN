@@ -80,6 +80,8 @@ export interface CharacterRef {
   dynasty?: EntityRef;
   /** 该人物的最高级别（或主要）头衔，用于卡片摘要。 */
   primaryTitle?: EntityRef;
+  /** 该引用在存档中的来源路径（如 character/1/child/2），用于史料依据面板回溯。 */
+  sourcePath?: string;
 }
 
 // ----------------------------------------------------------------------------

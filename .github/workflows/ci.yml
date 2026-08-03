@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # —— 数据契约（Python）：pydantic 运行时校验 + 序列化往返 ——
+  contract:
+    name: 契约测试 (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖
+        run: python -m pip install --upgrade pip && pip install "pydantic>=2" pytest
+      - name: 运行契约测试
+        working-directory: packages/save-schema/py
+        env:
+          PYTHONPATH: .
+        run: python -m pytest tests/ -q
+
+  # —— 后端（Python/FastAPI）：单元/集成测试。
+  # 真实存档集成测试需 SHIGUAN_TEST_SAVE（本地 62MB 存档），CI 无则自动跳过；
+  # Rust sidecar 在 Linux 下也未随本作业构建（由 rust 作业独立验证），相关测试同样跳过。
+  server:
+    name: 后端测试 (Python 3.11)
+    runs-on: ubuntu-latest
+    needs: contract
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装依赖
+        run: python -m pip install --upgrade pip && pip install "fastapi" "uvicorn" "pydantic>=2" "httpx" "pytest" "python-multipart"
+      - name: 运行后端测试
+        working-directory: apps/server
+        run: python -m pytest -q
+
+  # —— Rust sidecar（ck3-reader）：格式化 / clippy 视为错误 / release 构建 ——
+  rust:
+    name: Rust fmt / clippy / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: 格式化检查
+        working-directory: tools/ck3-reader
+        run: cargo fmt --all -- --check
+      - name: Clippy（任何警告即失败）
+        working-directory: tools/ck3-reader
+        run: cargo clippy --release -- -D warnings
+      - name: 构建（release）
+        working-directory: tools/ck3-reader
+        run: cargo build --release
+
+  # —— 前端（Node）：类型检查 / lint / 测试 / 生产构建 ——
+  web:
+    name: 前端检查 (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: 安装依赖
+        working-directory: apps/web
+        run: npm ci
+      - name: 类型检查
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Lint
+        working-directory: apps/web
+        run: npm run lint
+      - name: 测试
+        working-directory: apps/web
+        run: npm test
+      - name: 生产构建
+        working-directory: apps/web
+        run: npm run build

@@ -70,27 +70,34 @@ class Ck3ReaderAdapter:
 
     # -- 高层 API -------------------------------------------------------------
     def inspect(self, save_path: str | Path) -> dict:
-        """完整初检（melt 后提取 meta + mods + 人物计数 + 样本）。"""
+        """完整初检（会 melt：用于一次性 CLI / 调试）。服务内优先走 prepare+meta。"""
         return self._run("inspect", str(save_path))
 
     def list_mods(self, save_path: str | Path) -> list[str]:
         out = self._run("list-mods", str(save_path))
         return out.get("mods", [])
 
+    # -- 一次 melt、多次查询的缓存命令（Phase 2A.1） -------------------------
+    def prepare(self, staging_path: str | Path, cache_dir: str | Path) -> dict:
+        """一次 melt，把受控索引产物写到 cache_dir。后续查询全部走缓存。"""
+        return self._run("prepare", str(staging_path), str(cache_dir))
+
+    def meta(self, cache_dir: str | Path) -> dict:
+        """读取 prepare 生成的 meta.json（不重新 melt）。"""
+        return self._run("meta", str(cache_dir))
+
+    def character(self, cache_dir: str | Path, character_id: str) -> dict:
+        """从缓存随机读取单人物结构化档案（不重新 melt）。"""
+        return self._run("character", str(cache_dir), str(character_id))
+
+    # -- 兼容旧 melt 路径（仅供 adapter 集成测试 / CLI）——服务内优先走 prepare+meta+character --
     def list_characters(self, save_path: str | Path) -> list[dict]:
-        """返回完整人物索引（已缓存）。每个元素为 CharacterStub dict。"""
-        p = Path(save_path)
-        stat = p.stat()
-        key = (str(p.resolve()), stat.st_mtime, stat.st_size)
-        if key in self._index_cache:
-            return self._index_cache[key]
+        """返回完整人物索引（会 melt）。服务内改用 prepare 后分页，避免重复 melt。"""
         out = self._run("list-characters", str(save_path))
-        samples = out.get("sample", [])
-        self._index_cache[key] = samples
-        return samples
+        return out.get("sample", [])
 
     def get_character(self, save_path: str | Path, character_id: str) -> dict:
-        """返回单个人物的结构化摘要（JSON）。"""
+        """返回单个人物的结构化摘要（会 melt）。"""
         return self._run("character-json", str(save_path), str(character_id))
 
     def to_parsed_meta(self, inspect: dict) -> ParsedSaveMeta:

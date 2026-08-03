@@ -13,6 +13,7 @@ def _stub():
         "culture": "asian_han_chinese",
         "faith": "41",
         "dynasty": "9067",
+        "evidence_warnings": ["faith", "dynasty", "primary_title"],
     }
 
 
@@ -60,8 +61,15 @@ def test_to_profile_partial():
     p = to_profile(_stub(), _loader_with_culture())
     assert p.id == "6432"
     assert p.culture.name == "汉文化"
-    # 关系/头衔/时间线等 Phase-2 扩展，当前为空，绝不伪造
+    # 无法解析的字段保持为空，绝不伪造
     assert p.traits == []
     assert p.titles == []
     assert p.spouses == []
-    assert p.timeline == []
+    # 最小可信内容（Phase 2A.1 十一）：至少包含可确认的出生事件，且带证据；
+    # 未解析字段（faith/dynasty/primary_title）以 EvidenceWarning 标记，不伪造。
+    assert len(p.timeline) == 1
+    assert p.timeline[0].type.value == "birth"
+    assert p.timeline[0].evidence
+    assert any(w.code == "unresolved_faith" for w in p.evidenceWarnings)
+    assert any(w.code == "unresolved_dynasty" for w in p.evidenceWarnings)
+    assert any(w.code == "unresolved_primary_title" for w in p.evidenceWarnings)

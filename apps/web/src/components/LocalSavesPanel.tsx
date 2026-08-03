@@ -107,7 +107,7 @@ export default function LocalSavesPanel() {
         profileCache: {},
       });
       setActiveSaveId(s.saveId, result.meta);
-      navigate(ROUTES.characters);
+      navigate(ROUTES.savesCharacters(s.saveId));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

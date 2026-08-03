@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useStore, IDLE_REQUEST } from "../store";
 import { useRoute, navigate, ROUTES } from "../lib/router";
+import { setActiveSaveId } from "../lib/realRepository";
 import { buildDraft, eventChapterMap } from "../lib/buildOutline";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
@@ -40,6 +41,11 @@ const SCROLL_LOCK_MS = 700;
 export default function BiographyPage() {
   const route = useRoute();
   const characterId = route.params.characterId ?? null;
+  const saveId = route.params.saveId ?? null;
+  const isReal = !!saveId;
+  const backToSelect = isReal
+    ? ROUTES.savesCharacters(saveId)
+    : ROUTES.characters;
 
   const characterIndex = useStore((s) => s.characterIndex);
   const indexLoaded = useStore((s) => s.indexLoaded);
@@ -56,15 +62,25 @@ export default function BiographyPage() {
     [characterIndex, characterId],
   );
 
+  // 真实模式：进入即置 backendMode 并激活存档，供 loadProfile 经后端取档；
+  // 不依赖全量索引，刷新/深链到 /saves/:saveId/characters/:id 亦可恢复。
+  useEffect(() => {
+    if (!isReal || !saveId) return;
+    useStore.getState().setBackendMode(true);
+    setActiveSaveId(saveId, null);
+  }, [isReal, saveId]);
+
   // 载入完整档案（真正的按需取档）。仅当该人物处于 idle（且未缓存）时触发，
   // 成功态命中缓存不再访问仓库；错误态由"重试"按钮显式触发，避免自动重试死循环。
   useEffect(() => {
     if (!characterId) return;
-    if (!summary) return; // 索引中不存在该人物：无需取档（由 NotFound 处理）
+    // Mock：索引中不存在该人物则无需取档（由 NotFound 处理）。
+    // 真实模式无全量索引，跳过该判断，直接按需取档。
+    if (!isReal && !summary) return;
     if (reqState.status !== "idle") return;
     if (profileCache[characterId]) return;
     loadProfile(characterId);
-  }, [characterId, summary, reqState.status, profileCache, loadProfile]);
+  }, [characterId, summary, reqState.status, profileCache, loadProfile, isReal]);
 
   const draft = useMemo(
     () => (profile ? buildDraft(profile) : null),
@@ -133,7 +149,7 @@ export default function BiographyPage() {
   }
 
   // —— 边界状态 ——
-  if (!indexLoaded) {
+  if (!isReal && !indexLoaded) {
     return (
       <div
         className="mx-auto max-w-2xl px-5 py-12 text-ink-600"
@@ -144,8 +160,8 @@ export default function BiographyPage() {
       </div>
     );
   }
-  if (characterId && !summary) {
-    return <NotFound characterId={characterId} />;
+  if (characterId && !isReal && !summary) {
+    return <NotFound characterId={characterId} backPath={backToSelect} />;
   }
   if (reqState.status === "loading") {
     return (
@@ -181,7 +197,7 @@ export default function BiographyPage() {
             </SealButton>
             <SealButton
               variant="ghost"
-              onClick={() => navigate(ROUTES.characters)}
+              onClick={() => navigate(backToSelect)}
             >
               返回选择页
             </SealButton>
@@ -208,7 +224,7 @@ export default function BiographyPage() {
       <SealButton
         variant="ghost"
         className="mb-3 -ml-2"
-        onClick={() => navigate(ROUTES.characters)}
+        onClick={() => navigate(backToSelect)}
         aria-label="返回选择页"
       >
         <ChevronLeft size={16} />
@@ -326,7 +342,7 @@ export default function BiographyPage() {
   );
 }
 
-function NotFound({ characterId }: { characterId: string }) {
+function NotFound({ characterId, backPath }: { characterId: string; backPath: string }) {
   return (
     <div className="mx-auto max-w-2xl px-5 py-12">
       <MuseumSurface variant="raised" className="p-5">
@@ -337,7 +353,7 @@ function NotFound({ characterId }: { characterId: string }) {
         <SealButton
           variant="ghost"
           className="mt-4"
-          onClick={() => navigate(ROUTES.characters)}
+          onClick={() => navigate(backPath)}
         >
           返回选择页
         </SealButton>

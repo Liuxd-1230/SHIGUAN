@@ -22,7 +22,7 @@ export type RouteName =
 export interface Route {
   name: RouteName;
   path: string;
-  params: { characterId?: string };
+  params: { characterId?: string; saveId?: string };
 }
 
 export const ROUTES = {
@@ -30,6 +30,11 @@ export const ROUTES = {
   parse: "/parse",
   characters: "/characters",
   character: (id: string) => `/characters/${encodeURIComponent(id)}`,
+  // 真实存档浏览：URL 携带 saveId，刷新/深链可恢复（规范：真实路由恢复）。
+  savesCharacters: (saveId: string) =>
+    `/saves/${encodeURIComponent(saveId)}/characters`,
+  saveCharacter: (saveId: string, id: string) =>
+    `/saves/${encodeURIComponent(saveId)}/characters/${encodeURIComponent(id)}`,
   designlab: "/design-lab",
 } as const;
 
@@ -48,6 +53,26 @@ export function parsePath(pathname: string): Route {
       name: "bio",
       path: p,
       params: { characterId: decodeURIComponent(m[1]) },
+    };
+  }
+  // 真实存档浏览（URL 携带 saveId，可刷新恢复）
+  const rm = p.match(/^\/saves\/([^/]+)\/characters\/?$/);
+  if (rm) {
+    return {
+      name: "select",
+      path: p,
+      params: { saveId: decodeURIComponent(rm[1]) },
+    };
+  }
+  const rmb = p.match(/^\/saves\/([^/]+)\/characters\/([^/]+)\/?$/);
+  if (rmb) {
+    return {
+      name: "bio",
+      path: p,
+      params: {
+        saveId: decodeURIComponent(rmb[1]),
+        characterId: decodeURIComponent(rmb[2]),
+      },
     };
   }
   return { name: "notfound", path: p, params: {} };

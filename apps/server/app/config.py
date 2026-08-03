@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # apps/server/app/config.py -> parents[3] = 仓库根 (SHIGUAN)
@@ -36,9 +37,11 @@ _load_dotenv()
 TOOLS_DIR = WORKSPACE_ROOT / "tools"
 CK3_READER_DIR = TOOLS_DIR / "ck3-reader"
 
-# Rust sidecar 二进制：优先 release，回退 debug
-_READER_RELEASE = CK3_READER_DIR / "target" / "release" / "ck3-reader.exe"
-_READER_DEBUG = CK3_READER_DIR / "target" / "debug" / "ck3-reader.exe"
+# Rust sidecar 二进制：优先 release，回退 debug。
+# Windows 下为 ck3-reader.exe；其它平台（如 CI 的 Linux）为无扩展名的 ck3-reader。
+_READER_SUFFIX = ".exe" if sys.platform == "win32" else ""
+_READER_RELEASE = CK3_READER_DIR / "target" / "release" / f"ck3-reader{_READER_SUFFIX}"
+_READER_DEBUG = CK3_READER_DIR / "target" / "debug" / f"ck3-reader{_READER_SUFFIX}"
 
 
 def resolve_reader_binary() -> Path | None:
@@ -57,6 +60,18 @@ def resolve_default_saves_dir() -> Path | None:
     if env:
         p = Path(env)
         return p if p.exists() else None
+    # 优先 Known Folder API（Windows 真实 Documents，含 OneDrive 重定向）。
+    ck3_user, _source = None, "none"
+    try:
+        from app.services.known_folder import resolve_ck3_user_dir
+
+        ck3_user, _source = resolve_ck3_user_dir()
+    except Exception:
+        ck3_user = None
+    if ck3_user:
+        candidate = Path(ck3_user) / "save games"
+        return candidate if candidate.exists() else None
+    # 回退：USERPROFILE/Documents 拼接（部分环境无 Known Folder 支持）。
     userprofile = os.environ.get("USERPROFILE") or os.environ.get("HOME")
     if not userprofile:
         return None
@@ -72,6 +87,24 @@ def resolve_default_saves_dir() -> Path | None:
 
 # 受控临时目录（真实存档只读复制到此处解析，不进仓库）
 STAGING_ROOT = Path(os.environ.get("SHIGUAN_STAGING_DIR", str(WORKSPACE_ROOT / "data" / "staging")))
+
+# 解析缓存根目录：data/cache/<saveId>/<signature>/（不进仓库）。
+CACHE_ROOT = Path(os.environ.get("SHIGUAN_CACHE_DIR", str(WORKSPACE_ROOT / "data" / "cache")))
+
+# 手动导入：受控传入目录与体积上限（字节）。默认 512 MiB。
+INCOMING_ROOT = STAGING_ROOT / "incoming"
+MAX_UPLOAD_BYTES = int(os.environ.get("SHIGUAN_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
+UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1 MiB 分块流式写入
+
+
+def redact_path(path: str | None) -> str | None:
+    """脱敏本地路径：把用户主目录折叠为 '~'，避免在日志/响应泄露个人路径。"""
+    if not path:
+        return path
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if home and path.startswith(home):
+        return "~" + path[len(home):]
+    return path
 
 # CK3 游戏安装目录（用于 GameDataResolver 读取真实 DLC / 版本信息）。
 # 优先环境变量 SHIGUAN_CK3_GAME_DIR，其次 Steam 默认路径，再扫描常见库根。

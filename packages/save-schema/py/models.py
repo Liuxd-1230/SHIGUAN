@@ -141,6 +141,8 @@ class CharacterRef(BaseModel):
     deathDate: Optional[str] = None
     dynasty: Optional[EntityRef] = None
     primaryTitle: Optional[EntityRef] = None
+    # 该引用在存档中的来源路径（如 character/1/child/2），用于史料依据面板回溯。
+    sourcePath: Optional[str] = None
 
 
 class TraitRecord(BaseModel):

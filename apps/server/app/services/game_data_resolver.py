@@ -121,9 +121,17 @@ class GameDataResolver:
 
     # -- 本地化加载（基础游戏 → 按存档顺序叠加 Mod） --------------------------
     def build_localization(
-        self, mod_descriptors: list[str] | None = None, mods_dir: str | Path | None = None
+        self,
+        mod_descriptors: list[str] | None = None,
+        mods_dir: str | Path | None = None,
+        resolved_mods: list | None = None,
     ) -> LocalizationLoader:
-        """加载基础游戏本地化，再按存档记录的 Mod 顺序叠加 Mod 本地化。
+        """加载基础游戏本地化，再按存档声明的 Mod 顺序叠加 Mod 本地化（最小覆盖）。
+
+        覆盖顺序：基础游戏 → 按 load_order 升序叠加 Mod 本地化（后加载覆盖先加载的 key）。
+        archive 类型 Mod 用只读方式从压缩包内读取本地化，不修改/不解压到磁盘。
+        若提供 resolved_mods（ResolvedMod 列表），以其 content_path/localization_paths 为准；
+        否则回退到 mod_descriptors + mods_dir 的旧启发式。
 
         回退链：zh-Hans → english → 原始 key（见 LocalizationLoader）。
         只读扫描 localization 目录，不复制/不修改游戏或 Mod 文件。
@@ -131,12 +139,25 @@ class GameDataResolver:
         loader = LocalizationLoader()
         if self.is_available():
             loader.load_game(self.game_dir)  # type: ignore[arg-type]
+
+        if resolved_mods:
+            # 按 load_order 升序叠加（后加载覆盖先加载）。
+            for m in sorted(resolved_mods, key=lambda x: getattr(x, "load_order", 0)):
+                if not getattr(m, "resolved", False):
+                    continue
+                for lp in getattr(m, "localization_paths", []) or []:
+                    p = Path(lp)
+                    if p.is_dir():
+                        loader.load_dir(p)
+                    elif p.is_file():
+                        loader.load_archive(p)
+            return loader
+
         mod_root = Path(mods_dir) if mods_dir else None
         if mod_root is not None and mod_descriptors:
             for desc in mod_descriptors:
                 base = desc.split("/")[-1]
                 mod_id = base[:-4] if base.endswith(".mod") else base
-                # 优先按 .mod 的 path 定位（通常是 "mod/ugc_xxx"）；否则按 mod_id 目录猜测
                 cand = mod_root / mod_id
                 if cand.is_dir():
                     loader.load_mod(cand)

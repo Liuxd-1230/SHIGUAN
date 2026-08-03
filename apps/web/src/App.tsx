@@ -47,8 +47,10 @@ export default function App() {
   const mainRef = useRef<HTMLElement | null>(null);
 
   // 刷新恢复：直接访问 /characters 或 /characters/:id 时，先确保索引已载入。
+  // 真实存档路由（携带 saveId）由对应页面自行按需分页加载，不在此触发全量索引载入。
   useEffect(() => {
     if (route.name !== "select" && route.name !== "bio") return;
+    if (route.params.saveId) return;
     if (indexLoaded) return;
     let cancelled = false;
     useStore
@@ -65,7 +67,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [route.name, indexLoaded]);
+  }, [route.name, route.params.saveId, indexLoaded]);
 
   // 页面标题随路由更新（含传记页人物名）。减少无谓刷新：仅依赖路径与人物名。
   useEffect(() => {

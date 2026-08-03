@@ -21,6 +21,19 @@ describe("轻量路由（History API）", () => {
     expect(parsePath("/unknown/path").name).toBe("notfound");
   });
 
+  it("parsePath 正确识别真实存档路由（携带 saveId，可刷新恢复）", () => {
+    const sel = parsePath("/saves/my%20save/characters");
+    expect(sel.name).toBe("select");
+    expect(sel.params.saveId).toBe("my save");
+    const bio = parsePath("/saves/save_001/characters/6432");
+    expect(bio.name).toBe("bio");
+    expect(bio.params.saveId).toBe("save_001");
+    expect(bio.params.characterId).toBe("6432");
+    // 与 Mock 路由不冲突
+    expect(parsePath("/characters").params.saveId).toBeUndefined();
+    expect(parsePath("/characters/arnulf_001").params.saveId).toBeUndefined();
+  });
+
   it("navigate 通过自定义事件驱动 useRoute 更新", () => {
     window.history.replaceState({}, "", "/");
     const { result } = renderHook(() => useRoute());

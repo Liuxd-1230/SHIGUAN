@@ -41,22 +41,7 @@ class LocalizationLoader:
             text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError:
             return
-        cur_lang: str | None = None
-        for line in text.splitlines():
-            hm = _LANG_HEADER_RE.match(line.strip())
-            if hm:
-                raw = hm.group("lang").lower()
-                cur_lang = _LANG_DIR_TO_TAG.get(raw, raw)
-                self._data.setdefault(cur_lang, {})
-                continue
-            if cur_lang is None:
-                continue
-            em = _ENTRY_RE.match(line.strip())
-            if em:
-                key = em.group("key")
-                val = em.group("val").replace('\\"', '"').replace("\\n", "\n")
-                if key and val:
-                    self._data[cur_lang][key] = val
+        self._ingest_text(text)
 
     def load_dir(self, loc_dir: str | Path) -> int:
         """扫描某 localization 根目录（含 simp_chinese/english 子目录及 replace/）。返回加载条目数。"""
@@ -78,6 +63,55 @@ class LocalizationLoader:
 
     def load_mod(self, mod_dir: str | Path) -> int:
         return self.load_dir(Path(mod_dir) / "localization")
+
+    def load_archive(self, archive_path: str | Path) -> int:
+        """只读读取压缩包（.zip）内的 localization/*.yml 条目（支持 archive Mod）。
+
+        不修改、不解压到磁盘——仅在内存中解析压缩包里的本地化条目。
+        返回加载条目数。压缩包不存在或无法打开时返回 0。
+        """
+        import zipfile
+
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                count = 0
+                for name in zf.namelist():
+                    low = name.lower().replace("\\", "/")
+                    if not low.endswith((".yml", ".yaml")):
+                        continue
+                    # 压缩包内 localization 既可能在根（localization/...），
+                    # 也可能在子目录（mod/xxx/localization/...）。
+                    if not (low.startswith("localization/") or "/localization/" in low):
+                        continue
+                    try:
+                        data = zf.read(name).decode("utf-8-sig", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        continue
+                    before = sum(len(v) for v in self._data.values())
+                    self._ingest_text(data)
+                    after = sum(len(v) for v in self._data.values())
+                    count += after - before
+                return count
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def _ingest_text(self, text: str) -> None:
+        cur_lang: str | None = None
+        for line in text.splitlines():
+            hm = _LANG_HEADER_RE.match(line.strip())
+            if hm:
+                raw = hm.group("lang").lower()
+                cur_lang = _LANG_DIR_TO_TAG.get(raw, raw)
+                self._data.setdefault(cur_lang, {})
+                continue
+            if cur_lang is None:
+                continue
+            em = _ENTRY_RE.match(line.strip())
+            if em:
+                key = em.group("key")
+                val = em.group("val").replace('\\"', '"').replace("\\n", "\n")
+                if key and val:
+                    self._data[cur_lang][key] = val
 
     def resolve(self, key: str | None, languages: list[str] | None = None) -> str | None:
         if not key:

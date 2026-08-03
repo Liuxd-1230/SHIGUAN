@@ -192,10 +192,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   setBackendMode: (b) => set({ backendMode: b }),
 
+  // 仅 Mock 模式需要把全量摘要载入 store（Mock 数据仅数十条，可接受）。
+  // 真实模式不走此路径：人物选择页按需分页从后端拉取，绝不一次性载入数万条，
+  // 避免 Zustand 持有 35078 条人物（规范：Zustand 不存全量）。
   ensureIndex: async () => {
     if (get().indexLoaded) return;
-    const repo = get().backendMode ? realCharacterRepository : mockCharacterRepository;
-    const { meta, characterIndex } = await repo.loadIndex();
+    const { meta, characterIndex } = await mockCharacterRepository.loadIndex();
     set({ saveMeta: meta, characterIndex, indexLoaded: true });
   },
   setQuery: (q) => set({ query: q }),
