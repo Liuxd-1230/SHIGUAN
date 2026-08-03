@@ -32,6 +32,12 @@ from models import (  # noqa: E402
     CharacterSummary,
     Confidence,
     Encoding,
+    EntityIndex,
+    EntityIndexEntry,
+    EntityKind,
+    EntityKindIndex,
+    EntityKeyKind,
+    EntityNameSource,
     EntityRef,
     EvidenceRef,
     EvidenceWarning,
@@ -56,6 +62,9 @@ from models import (  # noqa: E402
     TitlePeriod,
     TitleTier,
     TimelineEvent,
+    TokenCompatibility,
+    TokenSourceInfo,
+    TokenSourceKind,
     TraitRecord,
     WarParticipation,
     WarRole,
@@ -326,3 +335,98 @@ def test_json_fixture_loaded():
 
 def test_index_entry_alias():
     assert CharacterIndexEntry is CharacterSummary
+
+
+# ---------------------------------------------------------------------------
+# 8. 实体索引契约（M2）：EntityKind / EntityIndexEntry / EntityKindIndex / EntityIndex
+# ---------------------------------------------------------------------------
+
+def test_entity_kind_has_ten_members():
+    # 与 TS union EntityKind 严格对齐（10 类）。
+    assert {k.value for k in EntityKind} == {
+        "trait", "faith", "religion", "culture", "house", "dynasty",
+        "title", "war", "memoryType", "courtPositionType",
+    }
+
+
+def test_entity_index_entry_resolved_true_when_key_present():
+    e = EntityIndexEntry(
+        id="house_antioch", key="dynn_antioch",
+        keyKind=EntityKeyKind.LOC, name="安条克家族",
+        nameSource=EntityNameSource.LOC, resolved=True,
+    )
+    dumped = e.model_dump(mode="json")
+    e2 = EntityIndexEntry.model_validate(dumped)
+    assert e2.resolved is True
+    assert e2.keyKind == EntityKeyKind.LOC
+
+
+def test_entity_index_entry_resolved_false_when_unnameable():
+    # 既无 key 也无 saveName：不得伪造名字，name 退化为原始 id。
+    e = EntityIndexEntry(
+        id="house_ghost", name="house_ghost",
+        nameSource=EntityNameSource.UNRESOLVED, resolved=False,
+    )
+    dumped = e.model_dump(mode="json")
+    e2 = EntityIndexEntry.model_validate(dumped)
+    assert e2.resolved is False
+    assert e2.name == "house_ghost"
+    assert e2.key is None
+    assert e2.saveName is None
+
+
+def test_entity_index_roundtrip():
+    faith = EntityKindIndex(
+        kind=EntityKind.FAITH,
+        source="save:religion.faiths",
+        containerFound=True,
+        count=2,
+        unresolvedCount=0,
+        entries={
+            "0": EntityIndexEntry(
+                id="0", key="orthodox", name="东正教",
+                nameSource=EntityNameSource.LOC, resolved=True,
+            ),
+        },
+    )
+    idx = EntityIndex(
+        schemaVersion=1,
+        readerVersion="0.1.0",
+        scanMs=12.3,
+        kinds={EntityKind.FAITH: faith},
+        warnings=[],
+    )
+    dumped = idx.model_dump(mode="json")
+    idx2 = EntityIndex.model_validate(dumped)
+    assert idx2.kinds[EntityKind.FAITH].count == 2
+    assert idx2.kinds[EntityKind.FAITH].entries["0"].name == "东正教"
+    # kind 反序列化为枚举
+    assert idx2.kinds[EntityKind.FAITH].kind == EntityKind.FAITH
+
+
+# ---------------------------------------------------------------------------
+# 9. Token 来源自报契约（M2.2）
+# ---------------------------------------------------------------------------
+
+def test_token_source_kind_four_states():
+    assert {k.value for k in TokenSourceKind} == {
+        "placeholder", "builtin_validated", "user_local", "literal_key",
+    }
+    assert {c.value for c in TokenCompatibility} == {
+        "ok", "partial", "incompatible", "external_missing",
+    }
+
+
+def test_token_source_info_roundtrip():
+    info = TokenSourceInfo(
+        kind=TokenSourceKind.PLACEHOLDER,
+        tokenCount=65536,
+        compatibility=TokenCompatibility.PARTIAL,
+        enumResolved=False,
+        warnings=["placeholder token 表：enum 字段保持为数字 id"],
+    )
+    dumped = info.model_dump(mode="json")
+    info2 = TokenSourceInfo.model_validate(dumped)
+    assert info2.kind == TokenSourceKind.PLACEHOLDER
+    assert info2.enumResolved is False
+    assert info2.compatibility == TokenCompatibility.PARTIAL

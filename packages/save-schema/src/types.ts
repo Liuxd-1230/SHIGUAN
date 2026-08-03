@@ -456,6 +456,121 @@ export interface ParsedSave {
 }
 
 // ----------------------------------------------------------------------------
+// 实体索引（M2：存档内全部实体类别的轻量索引 + 引用解析）
+// ----------------------------------------------------------------------------
+
+/** 实体类别，共 10 类，与 Rust scan_entities 的 EKind 一一对应。 */
+export type EntityKind =
+  | "trait"
+  | "faith"
+  | "religion"
+  | "culture"
+  | "house"
+  | "dynasty"
+  | "title"
+  | "war"
+  | "memoryType"
+  | "courtPositionType";
+
+/** 内部键性质：缺省（未标注）即 "loc"，可直接查本地化；"def" 需先查游戏定义库。 */
+export type EntityKeyKind = "loc" | "def";
+
+/** 实体最终可读名的来源，用于可追溯与诚实性标注。 */
+export type EntityNameSource =
+  | "save" // 存档成品名（玩家自定义头衔/混合文化/战争名），免查 loc
+  | "game_def" // 游戏定义文件（game/common）反查得到的本地化键
+  | "loc" // 本地化表命中
+  | "literal" // 明文存档，字段名本身即可读 key
+  | "unresolved"; // 无法命名：name 退化为原始 id，绝不为其编造可读名
+
+/**
+ * 单条实体索引条目（合并 Rust entities.json 的原始内部键 + Python 侧解析出的可读名）。
+ * 诚实性原则：resolved=false 时 name 就是原始 id，不得伪造。
+ */
+export interface EntityIndexEntry {
+  /** 实体 id（即存档容器内 map 的 key）。 */
+  id: string;
+  /** 存档自述的内部键（存档容器的 id→key，用于溯源）。 */
+  key?: string;
+  /** 内部键性质；缺省即 "loc"。 */
+  keyKind?: EntityKeyKind;
+  /** 家族前缀（仅 house）。 */
+  prefix?: string;
+  /** 上级实体 id：house→dynasty、faith→religion。 */
+  parent?: string;
+  /** 存档成品名（玩家自定义头衔/混合文化/战争名），免查 loc。 */
+  saveName?: string;
+  /** 战争开始日期（存档直述）。 */
+  startDate?: string;
+  /** 解析后的可读名；resolved=false 时为原始 id。 */
+  name: string;
+  /** 名称来源，用于溯源与 UI 标注。 */
+  nameSource: EntityNameSource;
+  /** resolved=false 表示该实体当前无法命名，name 退化为原始 id。 */
+  resolved: boolean;
+}
+
+/** 单类别实体索引。 */
+export interface EntityKindIndex {
+  kind: EntityKind;
+  /** 证据来源路径（存档内容器路径）。 */
+  source: string;
+  /** 容器是否在本存档里找到。false 时 entries 为空且会有 warning。 */
+  containerFound: boolean;
+  count: number;
+  /** 既无内部键也无成品名的条目数——必须标 resolved=false。 */
+  unresolvedCount: number;
+  /** id -> 条目。 */
+  entries: Record<string, EntityIndexEntry>;
+}
+
+/** 存档的完整实体索引（M2 产出，由后端 /saves/:saveId/entities 暴露）。 */
+export interface EntityIndex {
+  schemaVersion: number;
+  readerVersion: string;
+  scanMs: number;
+  kinds: Partial<Record<EntityKind, EntityKindIndex>>;
+  warnings: string[];
+}
+
+// ----------------------------------------------------------------------------
+// Token 来源自报（M2.2：解析所用令牌表的来源与兼容性状态）
+// ----------------------------------------------------------------------------
+
+/** 当前解析所用的令牌表来源。 */
+export type TokenSourceKind =
+  | "placeholder" // 占位全量 token 表（id→tXXXX），enum 字段保持数字/token-id
+  | "builtin_validated" // 内置校验过的真实字段名映射
+  | "user_local" // 用户自备真实令牌表（RAKALY_IRONMAN_TOKENS_PATH）
+  | "literal_key"; // 明文存档，字段名即可读 key，无需 token 表
+
+/** 令牌表兼容性状态。 */
+export type TokenCompatibility =
+  | "ok" // 全量命中，enum 字段可翻译
+  | "partial" // 部分枚举可翻译，其余保持数字（如仅有字段名表无 enum 表）
+  | "incompatible" // 版本不匹配，存在未知 token
+  | "external_missing"; // 需外部令牌表但缺失
+
+/**
+ * 令牌表来源自报。写入 meta.json，并由 API 暴露，
+ * 让前端明确"当前显示的名称为何可能是数字/未翻译"。
+ * 注意：unknown_token_count=0 绝不意味着"全部已本地化"——
+ * 占位表即可让 unknown_token_count=0 却仍把 enum 显示为数字。
+ */
+export interface TokenSourceInfo {
+  kind: TokenSourceKind;
+  /** 当前令牌表路径（若有）。 */
+  path?: string;
+  /** 表规模（条目数）。 */
+  tokenCount?: number;
+  compatibility: TokenCompatibility;
+  /** enum 字段（faith/dynasty/culture 等）是否已翻译为可读名。 */
+  enumResolved: boolean;
+  /** 告警（未知 token / 版本漂移 / 缺失组件等）。 */
+  warnings: string[];
+}
+
+// ----------------------------------------------------------------------------
 // Mock / 测试数据包裹层
 // ----------------------------------------------------------------------------
 

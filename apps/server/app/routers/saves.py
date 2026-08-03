@@ -51,9 +51,11 @@ from app.config import (
 from app.services.character_extractor import to_profile, to_summary
 from app.services.directory_watcher import DirectoryWatcher
 from app.services.game_data_resolver import GameDataResolver
+from app.services.game_def_loader import GameDefLoader
 from app.services.local_save_discovery import LocalSaveDiscoveryService
 from app.services.localization import LocalizationLoader
 from app.services.mod_resolver import ModResolver, read_launcher_playset
+from app.services.entity_index_builder import EntityIndexBuilder
 from app.services.save_registry import SaveRegistry, SaveStillWritingError
 from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
@@ -408,6 +410,8 @@ def inspect_save_endpoint(save_id: str):
         # 占位表造成的 unknown_token_count=0 不表示“语义已解析”，仅作信息字段保留。
         "unknown_token_count": meta.get("unknown_token_count"),
         "token_metrics": meta.get("token_metrics"),
+        # M2.2：明确暴露当前 token 来源与兼容性状态；enum_resolved 才是枚举是否翻译为可读名的真实指标。
+        "token_source": meta.get("token_source"),
         "header_parse_ok": meta.get("header_parse_ok"),
         "version_compatibility": _version_compatibility(game_version),
     }
@@ -438,7 +442,33 @@ def mods_endpoint(save_id: str, full_paths: bool = Query(False)):
     }
 
 
-@router.post("/local-saves/{save_id}/parse")
+@router.get("/local-saves/{save_id}/entities")
+def entities_endpoint(save_id: str):
+    """M2 实体索引：合并 entities.json（存档内部键）+ GameDefLoader（游戏定义键）+ LocalizationLoader。
+
+    返回带可读名的 EntityIndex；无法命名的实体 resolved=false、name=原始 id（绝不伪造）。
+    游戏目录缺失时 GameDefLoader 优雅降级，def 键实体标 unresolved。
+    """
+    _rec, sess = _ensure_session(save_id)
+    try:
+        raw = _session_manager.adapter.entities(sess.cache_dir)
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+    meta = _session_manager.meta(sess)
+    game_version = meta.get("game_version")
+    descriptors = _descriptors_from_meta(meta)
+    paths = effective_paths()
+    playset = None
+    if paths.get("saves_dir"):
+        lp = Path(paths["saves_dir"]).parent / "launcher-v2.sqlite"
+        playset = read_launcher_playset(lp)
+    report = _mod_resolver().resolve(descriptors, game_version, playset)
+    loader = _build_localization(save_id, sess.signature, report.required)
+    resolver = _game_resolver()
+    game_def = GameDefLoader(resolver.game_dir)
+    game_def.load()
+    index = EntityIndexBuilder(game_def=game_def, loc=loader).build(raw)
+    return index.model_dump(mode="json")
 def parse_save_endpoint(save_id: str):
     rec, sess = _ensure_session(save_id)
     try:

@@ -86,6 +86,10 @@ class Ck3ReaderAdapter:
         """读取 prepare 生成的 meta.json（不重新 melt）。"""
         return self._run("meta", str(cache_dir))
 
+    def entities(self, cache_dir: str | Path) -> dict:
+        """读取 prepare 生成的 entities.json（M2 实体索引：id → 存档内部键，未本地化）。"""
+        return self._run("entities", str(cache_dir))
+
     def character(self, cache_dir: str | Path, character_id: str) -> dict:
         """从缓存随机读取单人物结构化档案（不重新 melt）。"""
         return self._run("character", str(cache_dir), str(character_id))

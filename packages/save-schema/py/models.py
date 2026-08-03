@@ -119,6 +119,51 @@ class FactCheckStatus(str, Enum):
     NEEDS_REVISION = "needs_revision"
 
 
+class EntityKind(str, Enum):
+    """实体类别，共 10 类，与 Rust scan_entities 的 EKind 一一对应。"""
+    TRAIT = "trait"
+    FAITH = "faith"
+    RELIGION = "religion"
+    CULTURE = "culture"
+    HOUSE = "house"
+    DYNASTY = "dynasty"
+    TITLE = "title"
+    WAR = "war"
+    MEMORY_TYPE = "memoryType"
+    COURT_POSITION_TYPE = "courtPositionType"
+
+
+class EntityKeyKind(str, Enum):
+    """内部键性质：缺省（未标注）即 loc，可直接查本地化；def 需先查游戏定义库。"""
+    LOC = "loc"
+    DEF = "def"
+
+
+class EntityNameSource(str, Enum):
+    """实体最终可读名的来源，用于可追溯与诚实性标注。"""
+    SAVE = "save"                # 存档成品名（玩家自定义头衔/混合文化/战争名）
+    GAME_DEF = "game_def"        # 游戏定义文件（game/common）反查得到的本地化键
+    LOC = "loc"                  # 本地化表命中
+    LITERAL = "literal"          # 明文存档，字段名本身即可读 key
+    UNRESOLVED = "unresolved"    # 无法命名：name 退化为原始 id
+
+
+class TokenSourceKind(str, Enum):
+    """当前解析所用的令牌表来源。"""
+    PLACEHOLDER = "placeholder"          # 占位全量 token 表（id→tXXXX），enum 保持数字
+    BUILTIN_VALIDATED = "builtin_validated"  # 内置校验过的真实字段名映射
+    USER_LOCAL = "user_local"            # 用户自备真实令牌表
+    LITERAL_KEY = "literal_key"          # 明文存档，字段名即可读 key
+
+
+class TokenCompatibility(str, Enum):
+    """令牌表兼容性状态。"""
+    OK = "ok"
+    PARTIAL = "partial"
+    INCOMPATIBLE = "incompatible"
+    EXTERNAL_MISSING = "external_missing"
+
+
 # ---------------------------------------------------------------------------
 # 值对象
 # ---------------------------------------------------------------------------
@@ -450,6 +495,77 @@ class ParsedSave(BaseModel):
     memories: List[LifeEvent] = Field(default_factory=list)
     # 本地化文本表：key -> 可读名称。
     localization: Dict[str, str] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# 实体索引（M2：存档内全部实体类别的轻量索引 + 引用解析）
+# ---------------------------------------------------------------------------
+
+class EntityIndexEntry(BaseModel):
+    """单条实体索引条目（合并 Rust entities.json 原始内部键 + Python 解析出的可读名）。
+
+    诚实性原则：resolved=False 时 name 就是原始 id（id 字段值），不得伪造。
+    """
+    id: str
+    key: Optional[str] = None
+    # 内部键性质；缺省即 "loc"。
+    keyKind: Optional[EntityKeyKind] = None
+    # 家族前缀（仅 house）。
+    prefix: Optional[str] = None
+    # 上级实体 id：house→dynasty、faith→religion。
+    parent: Optional[str] = None
+    # 存档成品名（玩家自定义头衔/混合文化/战争名），免查 loc。
+    saveName: Optional[str] = None
+    # 战争开始日期（存档直述）。
+    startDate: Optional[str] = None
+    # 解析后的可读名；resolved=False 时为原始 id。
+    name: str
+    # 名称来源，用于溯源与 UI 标注。
+    nameSource: EntityNameSource
+    # resolved=False 表示该实体无法命名，name 退化为原始 id。
+    resolved: bool = True
+
+
+class EntityKindIndex(BaseModel):
+    """单类别实体索引。"""
+    kind: EntityKind
+    # 证据来源路径（存档内容器路径）。
+    source: str
+    # 容器是否在本存档里找到。
+    containerFound: bool = True
+    count: int = 0
+    # 既无内部键也无成品名的条目数——必须标 resolved=False。
+    unresolvedCount: int = 0
+    # id -> 条目。
+    entries: Dict[str, EntityIndexEntry] = Field(default_factory=dict)
+
+
+class EntityIndex(BaseModel):
+    """存档的完整实体索引（M2 产出，由后端 /saves/:saveId/entities 暴露）。"""
+    schemaVersion: int = 1
+    readerVersion: str = ""
+    scanMs: float = 0.0
+    kinds: Dict[EntityKind, EntityKindIndex] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Token 来源自报（M2.2：解析所用令牌表的来源与兼容性状态）
+# ---------------------------------------------------------------------------
+
+class TokenSourceInfo(BaseModel):
+    """令牌表来源自报。写入 meta.json 并由 API 暴露。
+
+    注意：unknown_token_count=0 绝不意味着"全部已本地化"——
+    占位表即可让 unknown_token_count=0 却仍把 enum 显示为数字。
+    """
+    kind: TokenSourceKind
+    path: Optional[str] = None
+    tokenCount: Optional[int] = None
+    compatibility: TokenCompatibility
+    # enum 字段（faith/dynasty/culture 等）是否已翻译为可读名。
+    enumResolved: bool = False
+    warnings: List[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
