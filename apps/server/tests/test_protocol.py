@@ -28,8 +28,15 @@ def test_binary_autosave_header(tmp_path, monkeypatch):
     assert res.isCompressed is False
     assert res.encoding.value == "unknown"
     assert res.needsExternal is True
-    # reader 存在时本地可解析
-    assert res.canParseLocally is True
+    # reader 可用性决定 canParseLocally：CI 的 server 作业不构建 Rust sidecar，
+    # 故缺失时走 missingComponent 路径（本地带二进制则本地可解析）。两种环境都覆盖。
+    reader = resolve_reader_binary()
+    if reader and Path(reader).exists():
+        assert res.canParseLocally is True
+    else:
+        assert res.canParseLocally is False
+        assert res.missingComponent is not None
+        assert res.missingComponent.name == "ck3-reader"
 
 
 def test_unsupported_file_without_reader(tmp_path, monkeypatch):

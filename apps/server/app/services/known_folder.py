@@ -31,10 +31,10 @@ class GUID(ctypes.Structure):
     """
 
     _fields_ = [
-        ("Data1", ctypes.c_ulong),
-        ("Data2", ctypes.c_ushort),
-        ("Data3", ctypes.c_ushort),
-        ("Data4", ctypes.c_ubyte * 8),
+        ("Data1", ctypes.c_uint32),  # Windows GUID DWORD 恒为 32 位（非 c_ulong：Linux x86-64 上 unsigned long 为 8 字节）
+        ("Data2", ctypes.c_uint16),  # WORD
+        ("Data3", ctypes.c_uint16),  # WORD
+        ("Data4", ctypes.c_uint8 * 8),  # BYTE[8]
     ]
 
     @classmethod
@@ -44,7 +44,7 @@ class GUID(ctypes.Structure):
         if len(parts) != 5:
             raise ValueError(f"非法 GUID 字符串：{s!r}")
         data4_hex = parts[3] + parts[4]
-        data4 = (ctypes.c_ubyte * 8)(*bytes.fromhex(data4_hex))
+        data4 = (ctypes.c_uint8 * 8)(*bytes.fromhex(data4_hex))
         return cls(
             Data1=int(parts[0], 16),
             Data2=int(parts[1], 16),
