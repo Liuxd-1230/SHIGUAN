@@ -164,6 +164,21 @@
 
 ---
 
+## Phase 2A.1 —— 真实路由分页 / CI / 安全导入（✅ 本轮已完成）
+
+> 收尾 Phase 2A 的三项验收缺口（#104 / #106 / #107），并补齐测试与 CI，提交 `3d4ca9a`。
+> 详见 `docs/phase2a1-report.md`。
+
+完成项：
+- ✅ #104 安全手动导入：`POST /api/local-saves/import` 仅收 `.ck3`，`_safe_import_filename` 净化文件名防路径穿越，写入受控 staging；单元测试 + `test_routing_api.py` 覆盖。
+- ✅ #106 前端真实路由 + 分页：新增 `/saves/:saveId/characters` 与 `/saves/:saveId/characters/:characterId`（URL 携带 saveId，可刷新恢复）；真实选择页 `RealCharacterBrowser` 首屏仅一页（48）、服务端分页、300ms 防抖搜索、`AbortController` 取消过期请求；**Zustand 不再持有全量 35078**（仅当前页 + 按人物档案）；传记页真实模式不依赖全量索引，按需取档；`store.ensureIndex` 改为仅 Mock 模式。
+- ✅ #107 GitHub Actions CI：`.github/workflows/ci.yml` 四作业（契约 pytest / 后端 pytest / Rust fmt+clippy -D warnings+build --release / 前端 tsc+eslint+vitest+vite build）。真实集成测试经 `SHIGUAN_TEST_SAVE` 守卫，CI 无存档则跳过。
+- ✅ 配套：`config.resolve_reader_binary` 跨平台（Linux 无扩展名二进制）；ck3-reader 运行 `cargo fmt --all`。
+- ✅ 验证：后端 82 passed / 8 skipped；契约 19 passed；前端 tsc 0 错 / eslint 0 警告 / vitest **104 passed** / vite build 437 模块；Rust fmt+clippy -D warnings 0 警告 + build 成功。
+- ⚠️ 沙箱至 `github:443` 推送仍被网络限制（与上一轮一致），push 由用户本机执行 `git push origin master`（提交 `3d4ca9a`）。
+
+---
+
 ## Phase 2B —— 后续（真实 token 中文化 / 传记管线 / 地图家族树）
 
 > Phase 2 的「后端 + 真实解析 MVP」已在 Phase 2A 完成（见上）。本节为 Phase 2B 及以后剩余项。
