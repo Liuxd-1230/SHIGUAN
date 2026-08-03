@@ -31,7 +31,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
@@ -45,35 +45,86 @@ use serde::Serialize;
 // 这些 id 是针对 CK3 1.19.0.6 反推验证过的；新游戏版本若新增/改 token，
 // 未知字段会被 Ignore 跳过（容错），关键字段若漂移需在 FIELD_TOKENS 校准。
 // ----------------------------------------------------------------------------
-const ROOT: &str = "t3155"; // gamestate 根
-const K_SAVE_VERSION: &[&str] = &["save_version", "t058f"];
+// 每个键都写成 &[真实名, 占位 token]：
+// - 用真实令牌表（tokens/ck3_tokens_real.txt）构建时，melt 明文输出可读字段名；
+// - 用占位表（tokens/ck3_tokens.txt）构建时，输出 tXXXX。
+// 两种构建产物都能被同一套扫描逻辑解析。
+const ROOT: &[&str] = &["meta_data", "t3155"];
+const K_SAVE_VERSION: &[&str] = &["save_game_version", "t058f"];
 const K_GAME_VERSION: &[&str] = &["version", "t00ee"];
-const K_DATE: &[&str] = &["date", "t3157"];
-const K_PLAYER_NAME: &[&str] = &["player_name", "t29e6"];
-const K_MODS: &str = "t32c1"; // Mod descriptor 数组容器
-const K_CHARACTERS: &str = "t2ce6"; // 人物容器（数字 id 键）
-const K_NAME: &[&str] = &["name", "t2755"];
-const K_BIRTH: &[&str] = &["birth", "t27e9"];
-const K_DEATH: &[&str] = &["death", "t2c68"]; // 有值=死亡日期；缺失或 9999.1.1=存活
-const K_CULTURE: &[&str] = &["culture", "t3b12"];
-const K_FAITH: &[&str] = &["faith", "t2f2b"];
-const K_DYNASTY: &[&str] = &["dynasty", "t2e5e"];
-const ALIVE_SENTINEL: &str = "9999.1.1";
+const K_DATE: &[&str] = &["meta_date", "t3157"];
+const K_PLAYER_NAME: &[&str] = &["meta_player_name", "t29e6"];
+const K_MODS: &[&str] = &["mods", "t32c1"]; // Mod descriptor 数组容器
 
-// 验证过的字段 token 映射（用于 Token 指标 version_specific_field_mappings）。
+/// 人物容器：(真实名, 占位 token, 该容器内人物是否存活)。
+/// CK3 把人物拆成三个容器；`dead_prunable` 嵌在顶层 `characters`(t06e3) 之下，
+/// 因此容器探测不能假设深度为 0。
+const K_CHAR_CONTAINERS: &[(&str, &str, bool)] = &[
+    ("living", "t2ce6", true),
+    ("dead_unprunable", "t2ce8", false),
+    ("dead_prunable", "t2ce7", false),
+];
+
+// —— 人物块直接字段（相对容器 depth+2）——
+const K_NAME: &[&str] = &["first_name", "t2755"];
+const K_BIRTH: &[&str] = &["birth", "t27e9"];
+const K_NICKNAME: &[&str] = &["nickname", "t2f68"];
+const K_ETHNICITY: &[&str] = &["ethnicity", "t3b12"];
+const K_CULTURE: &[&str] = &["culture", "t27f4"];
+const K_FAITH: &[&str] = &["faith", "t2f2b"];
+const K_DYNASTY_HOUSE: &[&str] = &["dynasty_house", "t2e5e"];
+const K_FEMALE: &[&str] = &["female", "t0625"];
+const K_SEXUALITY: &[&str] = &["sexuality", "t3334"];
+const K_TRAITS: &[&str] = &["traits", "t0648"];
+
+// —— family_data 子块 ——
+const K_FAMILY_DATA: &[&str] = &["family_data", "t274f"];
+const K_CHILD: &[&str] = &["child", "t2811"];
+const K_SPOUSE: &[&str] = &["spouse", "t2810"];
+const K_PRIMARY_SPOUSE: &[&str] = &["primary_spouse", "t332f"];
+const K_REAL_FATHER: &[&str] = &["real_father", "t2a5b"];
+
+// —— dead_data 子块（存在即代表已死亡）——
+const K_DEAD_DATA: &[&str] = &["dead_data", "t2750"];
+const K_DEATH_DATE: &[&str] = &["date", "t06b5"];
+const K_DEATH_REASON: &[&str] = &["reason", "t2b64"];
+const K_KILLER: &[&str] = &["killer", "t2766"];
+
+// —— 统治判定 ——
+const K_LANDED_DATA: &[&str] = &["landed_data", "t2753"];
+
+// 已在真实存档上验证过的字段 token 映射（用于 Token 指标）。
+// 全部通过 tools/ck3-reader/extract_tokens.py 从本机 ck3.exe 反推的真实令牌表核对，
+// 详见 docs/character-field-research.md。
 const FIELD_MAPPINGS: &[(&str, &str)] = &[
-    ("save_version", "t058f"),
-    ("game_version", "t00ee"),
-    ("date", "t3157"),
-    ("player_name", "t29e6"),
+    ("meta_data", "t3155"),
+    ("save_game_version", "t058f"),
+    ("version", "t00ee"),
+    ("meta_date", "t3157"),
+    ("meta_player_name", "t29e6"),
     ("mods", "t32c1"),
-    ("characters", "t2ce6"),
-    ("name", "t2755"),
+    ("living", "t2ce6"),
+    ("dead_unprunable", "t2ce8"),
+    ("dead_prunable", "t2ce7"),
+    ("first_name", "t2755"),
     ("birth", "t27e9"),
-    ("death", "t2c68"),
-    ("culture", "t3b12"),
+    ("ethnicity", "t3b12"),
+    ("culture", "t27f4"),
     ("faith", "t2f2b"),
-    ("dynasty", "t2e5e"),
+    ("dynasty_house", "t2e5e"),
+    ("female", "t0625"),
+    ("sexuality", "t3334"),
+    ("traits", "t0648"),
+    ("family_data", "t274f"),
+    ("child", "t2811"),
+    ("spouse", "t2810"),
+    ("primary_spouse", "t332f"),
+    ("real_father", "t2a5b"),
+    ("dead_data", "t2750"),
+    ("dead_data.date", "t06b5"),
+    ("dead_data.reason", "t2b64"),
+    ("dead_data.killer", "t2766"),
+    ("landed_data", "t2753"),
 ];
 
 #[allow(dead_code)]
@@ -115,9 +166,16 @@ struct InspectOutput {
     token_metrics: TokenMetrics,
 }
 
-/// 单人物在缓存 / melt 明文中的完整记录（Phase 2A.1 扩展）。
-/// 字面可提取字段：father/mother/spouse/child/trait_/female/male/ruler。
-/// 需要真实 token 表才能转可读名的枚举值（faith/dynasty）保留原始 id 并标记 unresolved。
+/// 单人物在缓存 / melt 明文中的完整记录（Phase 2B M1 重写）。
+///
+/// 关键事实（已在真实存档 1.19.0.6 上验证，见 docs/character-field-research.md）：
+/// - 人物块**没有** father / mother 字段。亲子关系只能由父母的 `child` 列表反向建索引，
+///   因此 `father` / `mother` 属于**推断**（parent_source 记录来源），不是存档直述事实。
+/// - `real_father` 只在私生子上出现（本存档 48 例），是存档直述的生父，属**确定**事实。
+/// - 存活与否由所在容器决定（living / dead_prunable / dead_unprunable），
+///   `dead_data` 子块内的 `date` 才是死亡日期，`arrival_date` 与死亡无关。
+/// - faith / culture / dynasty_house / traits 的值是**数字 id**，需要 M2 实体索引才能转可读名，
+///   在此之前一律进 evidence_warnings，绝不伪造名称。
 #[derive(Serialize, serde::Deserialize, Clone)]
 struct CharacterRecord {
     id: String,
@@ -136,23 +194,38 @@ struct CharacterRecord {
     traits: Vec<String>,
     ruler: bool,
     evidence_warnings: Vec<String>,
+    // —— Phase 2B M1 新增（对旧缓存用 serde default 兼容）——
+    #[serde(default)]
+    nickname: Option<String>,
+    #[serde(default)]
+    ethnicity: Option<String>,
+    #[serde(default)]
+    sexuality: Option<String>,
+    #[serde(default)]
+    real_father: Option<String>,
+    #[serde(default)]
+    primary_spouse: Option<String>,
+    #[serde(default)]
+    death_reason: Option<String>,
+    #[serde(default)]
+    killer: Option<String>,
+    /// 死亡容器归属：living / dead_prunable / dead_unprunable。
+    #[serde(default)]
+    container: Option<String>,
+    /// father / mother 的证据来源：`child_backref`（由父母 child 列表反推）
+    /// 或 `real_father`（存档直述）。为空表示未确定亲代。
+    #[serde(default)]
+    parent_source: Option<String>,
 }
 
 impl CharacterRecord {
-    fn alive_from_death(death: &Option<String>) -> bool {
-        match death {
-            None => true,
-            Some(d) => d == ALIVE_SENTINEL,
-        }
-    }
-
-    fn new(id: String) -> Self {
+    fn new(id: String, container: &str, alive: bool) -> Self {
         CharacterRecord {
             id,
             name: None,
             birth: None,
             death: None,
-            alive: true,
+            alive,
             sex: None,
             culture: None,
             faith: None,
@@ -163,9 +236,22 @@ impl CharacterRecord {
             children: Vec::new(),
             traits: Vec::new(),
             ruler: false,
-            // faith/dynasty 在占位 token 表下为数字 id，非可读名 → 明确标记 unresolved。
-            // primary_title（头衔）在占位表下被 token 化且无 id → 无法提取。
-            evidence_warnings: vec!["faith".into(), "dynasty".into(), "primary_title".into()],
+            // 这些字段的值是数字 id，不是可读名 → 明确标记 unresolved，等 M2 实体索引解析。
+            evidence_warnings: vec![
+                "faith:numeric_id".into(),
+                "culture:numeric_id".into(),
+                "dynasty_house:numeric_id".into(),
+                "traits:numeric_id".into(),
+            ],
+            nickname: None,
+            ethnicity: None,
+            sexuality: None,
+            real_father: None,
+            primary_spouse: None,
+            death_reason: None,
+            killer: None,
+            container: Some(container.to_string()),
+            parent_source: None,
         }
     }
 }
@@ -284,29 +370,48 @@ fn extract_field(line: &str, keys: &[&str]) -> Option<String> {
     None
 }
 
-/// 提取字面键字段（father=/mother=/female=yes/male=yes/ruler=yes 等）。
-/// 返回 (father, mother, sex, ruler)。
-fn extract_literal_scalars(line: &str) -> (Option<String>, Option<String>, Option<String>, bool) {
-    let mut father = None;
-    let mut mother = None;
-    let mut sex = None;
-    let mut ruler = false;
-    let t = line.trim_start();
-    if let Some(rest) = t.strip_prefix("father=") {
-        father = Some(first_token(rest));
+/// 严格按「行首键」提取标量值（`key=value` / `key="value"`）。
+///
+/// 与 `extract_field` 的区别：`extract_field` 用 `find` 在整行任意位置搜子串，
+/// 会把 `meta_date=` 误命中成 `date=`；扫描人物字段必须用这个严格版本。
+fn extract_kv(t: &str, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(rest) = t.strip_prefix(k)
+            && let Some(v) = rest.strip_prefix('=')
+        {
+            if v.starts_with('{') {
+                return None;
+            }
+            if let Some(s) = v.strip_prefix('"') {
+                return s.find('"').map(|e| s[..e].to_string());
+            }
+            let val = first_token(v);
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
     }
-    if let Some(rest) = t.strip_prefix("mother=") {
-        mother = Some(first_token(rest));
-    }
-    if t == "female=yes" || t.starts_with("female=yes") {
-        sex = Some("female".into());
-    } else if t == "male=yes" || t.starts_with("male=yes") {
-        sex = Some("male".into());
-    }
-    if t == "ruler=yes" || t.starts_with("ruler=yes") {
-        ruler = true;
-    }
-    (father, mother, sex, ruler)
+    None
+}
+
+/// 判断一行是否为 `key={`（块开头）。keys 同时接受真实名与占位 token。
+fn line_opens_key(t: &str, keys: &[&str]) -> bool {
+    keys.iter().any(|k| {
+        t.strip_prefix(k)
+            .and_then(|r| r.strip_prefix('='))
+            .map(|v| v.trim_start().starts_with('{'))
+            .unwrap_or(false)
+    })
+}
+
+/// 判断一行是否为 `key=yes`。
+fn line_is_yes(t: &str, keys: &[&str]) -> bool {
+    keys.iter().any(|k| {
+        t.strip_prefix(k)
+            .and_then(|r| r.strip_prefix('='))
+            .map(|v| v.starts_with("yes"))
+            .unwrap_or(false)
+    })
 }
 
 fn first_token(s: &str) -> String {
@@ -316,19 +421,39 @@ fn first_token(s: &str) -> String {
         .to_string()
 }
 
-/// 在一行里收集 trait_XXX=yes 形式的特质键（XXX 为字面字符串）。
-fn extract_traits(line: &str, out: &mut Vec<String>) {
-    let t = line.trim_start();
-    if let Some(rest) = t.strip_prefix("trait_") {
-        // trait_genius=yes / trait_X={...}
-        let key: String = rest
-            .chars()
-            .take_while(|c| *c != '=' && *c != ' ' && *c != '{' && *c != '\t')
-            .collect();
-        if !key.is_empty()
-            && (rest.starts_with(&format!("{key}=")) || rest.starts_with(&format!("{key}{{")))
-        {
-            out.push(key);
+/// 由父母的 `child` 列表反向建立亲子索引。
+///
+/// CK3 存档的人物块**不存在** father / mother 字段，只有父母侧的 `child` 列表，
+/// 因此子女的父母必须反推：遍历每个人的 children，把自己按性别回填到子女的 father/mother。
+/// 这是**推断**而非存档直述，统一用 parent_source="child_backref" 标注；
+/// 若同时存在存档直述的 `real_father`（私生子），保留 real_father 字段并优先标注。
+fn build_parent_index(records: &mut [CharacterRecord]) {
+    use std::collections::HashMap;
+    let mut pos: HashMap<String, usize> = HashMap::with_capacity(records.len());
+    for (i, r) in records.iter().enumerate() {
+        pos.insert(r.id.clone(), i);
+    }
+    // 先收集 (子索引, 亲代 id, 亲代是否为女性)，避免同时可变借用。
+    let mut edges: Vec<(usize, String, bool)> = Vec::new();
+    for r in records.iter() {
+        let is_female = r.sex.as_deref() == Some("female");
+        for child in &r.children {
+            if let Some(&ci) = pos.get(child) {
+                edges.push((ci, r.id.clone(), is_female));
+            }
+        }
+    }
+    drop(pos);
+    for (ci, parent_id, is_female) in edges {
+        let c = &mut records[ci];
+        if is_female {
+            if c.mother.is_none() {
+                c.mother = Some(parent_id);
+                c.parent_source = Some("child_backref".into());
+            }
+        } else if c.father.is_none() {
+            c.father = Some(parent_id);
+            c.parent_source = Some("child_backref".into());
         }
     }
 }
@@ -380,7 +505,7 @@ fn scan_meta(text: &str) -> MetaTuple {
         let opens = line.matches('{').count() as i64;
         let closes = line.matches('}').count() as i64;
 
-        if !in_root && line.contains(&format!("{ROOT}={{")) {
+        if !in_root && line_opens_key(line.trim(), ROOT) {
             in_root = true;
         }
         if in_root && depth == 1 {
@@ -396,7 +521,7 @@ fn scan_meta(text: &str) -> MetaTuple {
             if player_name.is_none() {
                 player_name = extract_field(line, K_PLAYER_NAME);
             }
-            if line.contains(&format!("{K_MODS}={{")) {
+            if line_opens_key(line.trim(), K_MODS) {
                 in_mods = true;
             }
         }
@@ -430,106 +555,163 @@ fn scan_meta(text: &str) -> MetaTuple {
     (save_version, game_version, date, player_name, mods)
 }
 
-/// 完整扫描人物容器：统计总数/死亡数，并提取每个角色的完整记录（含字面可提取字段）。
+/// 当前所在的人物子块。
+#[derive(Clone, Copy, PartialEq)]
+enum SubBlock {
+    Family,
+    Dead,
+}
+
+/// 当前正在收集的列表容器。
+#[derive(Clone, Copy, PartialEq)]
+enum ListKind {
+    Child,
+    Spouse,
+    Traits,
+}
+
+/// 完整扫描人物容器：统计总数/死亡数，并提取每个角色的完整记录。
+///
+/// 会依次进入 living / dead_unprunable / dead_prunable 三个容器（dead_prunable 嵌在
+/// 顶层 `characters` 之下），因此容器探测不限定深度。存活与否由容器决定，
+/// 不再依赖任何 "9999.1.1" 哨兵值。
 fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
     let mut depth: i64 = 0;
-    let mut in_chars = false;
-    let mut char_base: i64 = 0;
+    let mut base: i64 = -1; // 当前人物容器所在深度；-1 表示不在容器内
+    let mut container_name = "";
+    let mut container_alive = true;
     let mut count = 0usize;
-    let mut dead = 0usize;
     let mut records: Vec<CharacterRecord> = Vec::new();
     let mut cur: Option<CharacterRecord> = None;
-
-    // 列表字段收集状态（spouse=/child= 可能是 { id id } 形式）。
-    let mut collecting: Option<&str> = None;
+    let mut sub: Option<SubBlock> = None;
+    let mut sub_depth: i64 = 0;
+    let mut list: Option<ListKind> = None;
+    let mut list_depth: i64 = 0;
 
     for line in text.lines() {
         let opens = line.matches('{').count() as i64;
         let closes = line.matches('}').count() as i64;
+        let t = line.trim();
 
-        if !in_chars && line.contains(&format!("{K_CHARACTERS}={{")) {
-            in_chars = true;
-            char_base = depth;
-        }
-        if in_chars {
-            let child_depth = char_base + 1; // 数字 id 条目
-            let field_depth = char_base + 2; // 条目内的字段
+        if base < 0 {
+            // 容器探测：living / dead_unprunable / dead_prunable
+            for (name, tok, alive) in K_CHAR_CONTAINERS {
+                if line_opens_key(t, &[name, tok]) {
+                    base = depth;
+                    container_name = name;
+                    container_alive = *alive;
+                    break;
+                }
+            }
+        } else {
+            let entry_depth = base + 1; // 数字 id 条目
+            let field_depth = base + 2; // 条目内的直接字段
 
-            if depth == child_depth
-                && let Some(id) = capture_id_entry(line)
+            // 新人物条目
+            if depth == entry_depth
+                && let Some(id) = capture_id_entry(t)
             {
                 if let Some(c) = cur.take() {
-                    if !c.alive {
-                        dead += 1;
-                    }
                     records.push(c);
                 }
                 count += 1;
-                cur = Some(CharacterRecord::new(id));
+                cur = Some(CharacterRecord::new(id, container_name, container_alive));
+                sub = None;
+                list = None;
             }
-            if depth == field_depth
-                && let Some(c) = cur.as_mut()
-            {
-                if c.name.is_none() {
-                    c.name = extract_field(line, K_NAME);
-                }
-                if c.birth.is_none() {
-                    c.birth = extract_field(line, K_BIRTH);
-                }
-                if c.death.is_none() {
-                    c.death = extract_field(line, K_DEATH);
-                    c.alive = CharacterRecord::alive_from_death(&c.death);
-                }
-                if c.culture.is_none() {
-                    c.culture = extract_field(line, K_CULTURE);
-                }
-                if c.faith.is_none() {
-                    c.faith = extract_field(line, K_FAITH);
-                }
-                if c.dynasty.is_none() {
-                    c.dynasty = extract_field(line, K_DYNASTY);
-                }
-                let (father, mother, sex, ruler) = extract_literal_scalars(line);
-                if father.is_some() {
-                    c.father = father;
-                }
-                if mother.is_some() {
-                    c.mother = mother;
-                }
-                if sex.is_some() {
-                    c.sex = sex;
-                }
-                if ruler {
-                    c.ruler = true;
-                }
-                extract_traits(line, &mut c.traits);
-                // spouse=/child= 标量形式
-                let t = line.trim_start();
-                if let Some(rest) = t.strip_prefix("spouse=") {
-                    let tok = first_token(rest);
-                    if !tok.is_empty() && !rest.trim_start().starts_with('{') {
-                        c.spouses.push(tok);
-                    } else if rest.trim_start().starts_with('{') {
-                        collecting = Some("spouse");
+
+            if let Some(c) = cur.as_mut() {
+                if depth == field_depth {
+                    // —— 直接标量字段 ——
+                    if c.name.is_none() {
+                        c.name = extract_kv(t, K_NAME);
+                    }
+                    if c.birth.is_none() {
+                        c.birth = extract_kv(t, K_BIRTH);
+                    }
+                    if c.nickname.is_none() {
+                        c.nickname = extract_kv(t, K_NICKNAME);
+                    }
+                    if c.ethnicity.is_none() {
+                        c.ethnicity = extract_kv(t, K_ETHNICITY);
+                    }
+                    if c.culture.is_none() {
+                        c.culture = extract_kv(t, K_CULTURE);
+                    }
+                    if c.faith.is_none() {
+                        c.faith = extract_kv(t, K_FAITH);
+                    }
+                    if c.dynasty.is_none() {
+                        c.dynasty = extract_kv(t, K_DYNASTY_HOUSE);
+                    }
+                    if c.sexuality.is_none() {
+                        c.sexuality = extract_kv(t, K_SEXUALITY);
+                    }
+                    // 性别：存档只写 female=yes，缺省即男性（CK3 编码约定）。
+                    if line_is_yes(t, K_FEMALE) {
+                        c.sex = Some("female".into());
+                    }
+                    // 持有封地 → 统治者
+                    if line_opens_key(t, K_LANDED_DATA) {
+                        c.ruler = true;
+                    }
+                    // —— 子块进入 ——
+                    if line_opens_key(t, K_FAMILY_DATA) {
+                        sub = Some(SubBlock::Family);
+                        sub_depth = depth;
+                    } else if line_opens_key(t, K_DEAD_DATA) {
+                        sub = Some(SubBlock::Dead);
+                        sub_depth = depth;
+                    } else if line_opens_key(t, K_TRAITS) {
+                        list = Some(ListKind::Traits);
+                        list_depth = depth;
+                    }
+                } else if sub == Some(SubBlock::Family) && depth == sub_depth + 1 {
+                    // —— family_data 内 ——
+                    if line_opens_key(t, K_CHILD) {
+                        list = Some(ListKind::Child);
+                        list_depth = depth;
+                    } else if line_opens_key(t, K_SPOUSE) {
+                        list = Some(ListKind::Spouse);
+                        list_depth = depth;
+                    } else {
+                        if let Some(v) = extract_kv(t, K_CHILD) {
+                            c.children.push(v);
+                        }
+                        if let Some(v) = extract_kv(t, K_SPOUSE) {
+                            c.spouses.push(v);
+                        }
+                        if c.primary_spouse.is_none() {
+                            c.primary_spouse = extract_kv(t, K_PRIMARY_SPOUSE);
+                        }
+                        if c.real_father.is_none()
+                            && let Some(v) = extract_kv(t, K_REAL_FATHER)
+                        {
+                            c.real_father = Some(v);
+                        }
+                    }
+                } else if sub == Some(SubBlock::Dead) && depth == sub_depth + 1 {
+                    // —— dead_data 内：date 才是死亡日期 ——
+                    if c.death.is_none() {
+                        c.death = extract_kv(t, K_DEATH_DATE);
+                    }
+                    if c.death_reason.is_none() {
+                        c.death_reason = extract_kv(t, K_DEATH_REASON);
+                    }
+                    if c.killer.is_none() {
+                        c.killer = extract_kv(t, K_KILLER);
                     }
                 }
-                if let Some(rest) = t.strip_prefix("child=") {
-                    let tok = first_token(rest);
-                    if !tok.is_empty() && !rest.trim_start().starts_with('{') {
-                        c.children.push(tok);
-                    } else if rest.trim_start().starts_with('{') {
-                        collecting = Some("child");
-                    }
-                }
-            }
-            // 列表字段收集：在列表容器内（depth > field_depth）收集裸 id token。
-            if collecting.is_some() && depth > field_depth {
-                for tok in bare_id_tokens(line) {
-                    if let Some(c) = cur.as_mut() {
-                        match collecting {
-                            Some("spouse") => c.spouses.push(tok),
-                            Some("child") => c.children.push(tok),
-                            _ => {}
+
+                // —— 列表体：收集裸 id ——
+                if let Some(kind) = list
+                    && depth > list_depth
+                {
+                    for tok in bare_id_tokens(line) {
+                        match kind {
+                            ListKind::Child => c.children.push(tok),
+                            ListKind::Spouse => c.spouses.push(tok),
+                            ListKind::Traits => c.traits.push(tok),
                         }
                     }
                 }
@@ -537,31 +719,33 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
         }
 
         let new_depth = depth + opens - closes;
-        if in_chars && new_depth <= char_base {
-            in_chars = false;
-            collecting = None;
-            if let Some(c) = cur.take() {
-                if !c.alive {
-                    dead += 1;
+        if base >= 0 {
+            if list.is_some() && new_depth <= list_depth {
+                list = None;
+            }
+            if sub.is_some() && new_depth <= sub_depth {
+                sub = None;
+            }
+            if new_depth <= base {
+                // 容器结束
+                if let Some(c) = cur.take() {
+                    records.push(c);
                 }
-                records.push(c);
+                base = -1;
+                container_name = "";
+                sub = None;
+                list = None;
             }
         }
-        // 列表收集结束：深度回落到 field_depth。
-        if collecting.is_some() && new_depth <= char_base + 2 {
-            collecting = None;
-        }
-        depth = new_depth;
-        if depth < 0 {
-            depth = 0;
-        }
+        depth = new_depth.max(0);
     }
     if let Some(c) = cur.take() {
-        if !c.alive {
-            dead += 1;
-        }
         records.push(c);
     }
+
+    // 亲子关系只能反推（存档无 father/mother 字段）。
+    build_parent_index(&mut records);
+    let dead = records.iter().filter(|r| !r.alive).count();
     (count, dead, records)
 }
 
@@ -926,9 +1110,383 @@ fn parse_flags(args: &[String]) -> (usize, usize, String, bool) {
 
 fn usage() -> ! {
     eprintln!(
-        "用法: ck3-reader <prepare|meta|characters|character|inspect|list-mods|list-characters|character-json|dump> <args...>"
+        "用法: ck3-reader <prepare|meta|characters|character|inspect|list-mods|list-characters|character-json|dump|inspect-character|inspect-token|find-references|sample-field> <args...>"
     );
     process::exit(2);
+}
+
+// ----------------------------------------------------------------------------
+// 字段研究诊断工具（仅开发用，输出写入 data/debug，不进 Git、不泄露姓名/完整存档）
+// ----------------------------------------------------------------------------
+
+/// 在 args 中取 --out <dir>（默认 data/debug），并就地移除这两项。
+fn take_out_dir(args: &mut Vec<String>) -> PathBuf {
+    let mut out = PathBuf::from("data/debug");
+    if let Some(pos) = args.iter().position(|a| a == "--out") {
+        if let Some(v) = args.get(pos + 1) {
+            out = PathBuf::from(v);
+        }
+        args.remove(pos + 1);
+        args.remove(pos);
+    }
+    out
+}
+
+/// 在 args 中取 --limit <n>（默认 20），并就地移除。
+fn take_limit(args: &mut Vec<String>, default: usize) -> usize {
+    let mut limit = default;
+    if let Some(pos) = args.iter().position(|a| a == "--limit") {
+        if let Some(v) = args.get(pos + 1) {
+            limit = v.parse().unwrap_or(default);
+        }
+        args.remove(pos + 1);
+        args.remove(pos);
+    }
+    limit
+}
+
+/// 人物容器键前缀（同时覆盖真实 token 表与占位 token 表两种 melt 形态）。
+const CHAR_CONTAINER_PREFIXES: &[&str] = &[
+    "living={",
+    "t2ce6={",
+    "dead_unprunable={",
+    "t2ce8={",
+    "dead_prunable={",
+    "t2ce7={",
+];
+
+/// 遍历 living / dead_unprunable / dead_prunable 三个容器内的每个顶级人物块，
+/// 回调 (char_id, start_line, end_line_exclusive)。
+///
+/// 调用方需自行 `text.lines().collect()` 一次并复用该切片，
+/// 避免在回调里对上百 MB 的明文重复切分。
+fn walk_char_blocks(lines: &[&str], mut f: impl FnMut(&str, usize, usize)) {
+    let n = lines.len();
+    // depth = 进入 lines[i] 之前的花括号深度
+    let mut depth: i64 = 0;
+    let mut container_base: Option<i64> = None;
+    let mut i = 0usize;
+    while i < n {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        // 必须先判断"是否已离开当前容器"，再判断"是否进入新容器"，
+        // 否则两个容器紧邻时会漏掉后一个。
+        if let Some(base) = container_base
+            && depth <= base
+        {
+            container_base = None;
+        }
+
+        if container_base.is_none()
+            && CHAR_CONTAINER_PREFIXES
+                .iter()
+                .any(|p| trimmed.starts_with(p))
+        {
+            container_base = Some(depth);
+            depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+            i += 1;
+            continue;
+        }
+
+        // 人物块位于容器的直接子层：`<数字>={`
+        if let Some(base) = container_base
+            && depth == base + 1
+            && let Some(eq) = trimmed.find("={")
+        {
+            let head = &trimmed[..eq];
+            if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
+                let start = i;
+                let mut d = depth;
+                let mut j = i;
+                while j < n {
+                    d += lines[j].matches('{').count() as i64;
+                    d -= lines[j].matches('}').count() as i64;
+                    j += 1;
+                    // 人物块闭合后深度回到容器子层
+                    if d <= base + 1 {
+                        break;
+                    }
+                }
+                f(head, start, j);
+                i = j;
+                depth = base + 1;
+                continue;
+            }
+        }
+
+        depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+        i += 1;
+    }
+}
+
+/// 通用字段提取：返回 (字段键, 余值)。字段键可以是可读字段名或 token id
+/// （真实 / 占位两种 melt 都适用），使诊断子命令在任一代币表下都能工作。
+fn field_kv(line: &str) -> Option<(String, &str)> {
+    let t = line.trim_start();
+    if let Some(eq) = t.find('=') {
+        let key = t[..eq].trim();
+        if !key.is_empty() {
+            return Some((key.to_string(), &t[eq + 1..]));
+        }
+    }
+    None
+}
+
+/// 判断一行字段键是否匹配用户输入（支持 readable<->token id 双向，基于 FIELD_MAPPINGS）。
+fn field_matches(key: &str, input: &str) -> bool {
+    if key == input {
+        return true;
+    }
+    for (real, tok) in FIELD_MAPPINGS {
+        if *real == input && key == *tok {
+            return true;
+        }
+        if *tok == input && key == *real {
+            return true;
+        }
+    }
+    false
+}
+
+/// 把值脱敏为类型标签 + 安全样本（字符串值折叠为 <str>，避免泄露姓名）。
+/// 人物 id 的经验取值区间（**仅供诊断报告标注可读性使用**）。
+///
+/// 头衔 / 记忆 / 神器等使用各自独立的 id 空间且与人物 id 数值重叠，
+/// 因此该判断可能误标（例：`dynasty_house=9067` 会被标成 `charid`）。
+/// 正式提取链路按字段语义取值，**不依赖**此启发式。
+/// 详见 `docs/character-field-research.md` §8。
+const CHARID_HEURISTIC_RANGE: std::ops::RangeInclusive<i64> = 6000..=60000;
+
+fn looks_like_charid(iv: i64) -> bool {
+    CHARID_HEURISTIC_RANGE.contains(&iv)
+}
+
+fn classify_value(rest: &str) -> String {
+    let v = rest.trim();
+    if v.is_empty() {
+        return "empty".into();
+    }
+    if v == "yes" || v == "no" {
+        return format!("bool:{v}");
+    }
+    if v.starts_with('"') {
+        // 字符串值（可能是姓名/本地化 key）：折叠长度，不输出原文
+        return format!("str<{}>", v.trim_matches('"').chars().count());
+    }
+    if v.starts_with('{') {
+        let inner = v.trim_start_matches('{').trim();
+        if inner.is_empty() || inner.starts_with('{') {
+            return "object".into();
+        }
+        let nums: Vec<&str> = inner
+            .split_whitespace()
+            .filter(|s| s.chars().all(|c| c.is_ascii_digit()))
+            .collect();
+        if !nums.is_empty() {
+            // 判断是否为人物 id 数组
+            let char_ids: Vec<&str> = nums
+                .iter()
+                .copied()
+                .filter(|s| s.parse::<i64>().is_ok_and(looks_like_charid))
+                .collect();
+            if !char_ids.is_empty() {
+                return format!("array_charid({})", char_ids.len());
+            }
+            return format!("array_num({})", nums.len());
+        }
+        return "object".into();
+    }
+    // 裸标量：数字（可能是人物 id 或数值）
+    if let Ok(iv) = v.parse::<i64>() {
+        if looks_like_charid(iv) {
+            return format!("charid:{iv}");
+        }
+        return format!("num:{iv}");
+    }
+    format!("other:{v}")
+}
+
+/// inspect-character：输出某人物块的全部 token 结构（类型 + 脱敏样本）。
+fn cmd_inspect_character(path: &Path, id: &str, out: &Path) -> Result<(), String> {
+    let data = read_save_bytes(path)?;
+    let (melted, _unknown) = melt_save(&data)?;
+    let text = String::from_utf8_lossy(&melted);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found: Option<(usize, usize)> = None;
+    walk_char_blocks(&lines, |cid, s, e| {
+        if cid == id {
+            found = Some((s, e));
+        }
+    });
+    let (s, e) = found.ok_or_else(|| format!("未找到人物 {id}"))?;
+    let mut report = String::new();
+    report.push_str(&format!("character {id} (lines {s}-{e})\n"));
+    for line in &lines[s..e] {
+        if let Some((tok, rest)) = field_kv(line) {
+            report.push_str(&format!("  {tok:6} {}\n", classify_value(rest)));
+        }
+    }
+    fs::create_dir_all(out).map_err(|e| format!("创建调试目录失败: {e}"))?;
+    let out_path = out.join(format!("inspect_{id}.txt"));
+    fs::write(&out_path, &report).map_err(|e| format!("写 inspect 失败: {e}"))?;
+    // 仅打印脱敏摘要到 stdout（不泄露姓名/完整存档）
+    let tok_count = lines[s..e].iter().filter(|l| field_kv(l).is_some()).count();
+    println!("人物 {id}: 块 {s}-{e}, token 行 {tok_count}");
+    println!("结构报告已写入 {}", out_path.display());
+    Ok(())
+}
+
+/// inspect-token：统计某 token 在所有人物块中的值类型分布 + 脱敏样本。
+fn cmd_inspect_token(path: &Path, token: &str, out: &Path) -> Result<(), String> {
+    let data = read_save_bytes(path)?;
+    let (melted, _unknown) = melt_save(&data)?;
+    let text = String::from_utf8_lossy(&melted);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut types: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut samples: Vec<String> = Vec::new();
+    walk_char_blocks(&lines, |_cid, s, e| {
+        for line in &lines[s..e] {
+            if let Some((tok, rest)) = field_kv(line)
+                && field_matches(&tok, token)
+            {
+                let c = classify_value(rest);
+                *types.entry(c.clone()).or_insert(0) += 1;
+                if samples.len() < 8 {
+                    samples.push(format!("{tok} -> {c}"));
+                }
+            }
+        }
+    });
+    let mut report = format!("token {token} 值类型分布:\n");
+    let mut keys: Vec<_> = types.iter().collect();
+    keys.sort_by(|a, b| b.1.cmp(a.1));
+    for (k, v) in keys {
+        report.push_str(&format!("  {k:20} {v}\n"));
+    }
+    report.push_str("\n样本:\n");
+    for s in &samples {
+        report.push_str(&format!("  {s}\n"));
+    }
+    fs::create_dir_all(out).map_err(|e| format!("创建调试目录失败: {e}"))?;
+    let out_path = out.join(format!("inspect_token_{token}.txt"));
+    fs::write(&out_path, &report).map_err(|e| format!("写 inspect_token 失败: {e}"))?;
+    println!("token {token} 报告已写入 {}", out_path.display());
+    Ok(())
+}
+
+/// find-references：找出所有把 <id> 作为引用值的人物块及所用 token。
+fn cmd_find_references(path: &Path, id: &str, out: &Path) -> Result<(), String> {
+    let data = read_save_bytes(path)?;
+    let (melted, _unknown) = melt_save(&data)?;
+    let text = String::from_utf8_lossy(&melted);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut refs: Vec<(String, String)> = Vec::new();
+    walk_char_blocks(&lines, |cid, s, e| {
+        if cid == id {
+            return; // 跳过自身
+        }
+        // key_stack 记录当前所在的嵌套键，用于给跨行数组元素定位归属字段
+        let mut key_stack: Vec<String> = Vec::new();
+        let mut hit: Option<String> = None;
+        for line in &lines[s..e] {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some((tok, rest)) = field_kv(trimmed) {
+                let v = rest.trim();
+                // 标量引用：<field>=<id>
+                if v == id {
+                    hit = Some(tok);
+                    break;
+                }
+                if v.starts_with('{') {
+                    // 单行数组：<field>={ a b c }
+                    if v.trim_matches(|c| c == '{' || c == '}')
+                        .split_whitespace()
+                        .any(|t| t == id)
+                    {
+                        hit = Some(format!("{tok}(array)"));
+                        break;
+                    }
+                    // 跨行块起始：<field>={
+                    if v.ends_with('{') {
+                        key_stack.push(tok);
+                    }
+                }
+                continue;
+            }
+            if trimmed.starts_with('}') {
+                key_stack.pop();
+                continue;
+            }
+            // 跨行数组的元素行（纯数字序列）
+            if trimmed.split_whitespace().any(|t| t == id) {
+                let ctx = key_stack.last().cloned().unwrap_or_else(|| "?".to_string());
+                hit = Some(format!("{ctx}(array)"));
+                break;
+            }
+        }
+        if let Some(k) = hit {
+            refs.push((cid.to_string(), k));
+        }
+    });
+    let mut report = format!("引用人物 {id} 的条目（共 {}）:\n", refs.len());
+    for (cid, tok) in &refs {
+        report.push_str(&format!("  char {cid} via {tok}\n"));
+    }
+    fs::create_dir_all(out).map_err(|e| format!("创建调试目录失败: {e}"))?;
+    let out_path = out.join(format!("find_refs_{id}.txt"));
+    fs::write(&out_path, &report).map_err(|e| format!("写 find_refs 失败: {e}"))?;
+    println!(
+        "引用 {id} 的条目 {} 个，报告写入 {}",
+        refs.len(),
+        out_path.display()
+    );
+    Ok(())
+}
+
+/// sample-field：对给定字段名或 token，抽样若干脱敏值。
+fn cmd_sample_field(path: &Path, field: &str, limit: usize, out: &Path) -> Result<(), String> {
+    let data = read_save_bytes(path)?;
+    let (melted, _unknown) = melt_save(&data)?;
+    let text = String::from_utf8_lossy(&melted);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut samples: Vec<String> = Vec::new();
+    let mut hit_chars = 0usize;
+    walk_char_blocks(&lines, |cid, s, e| {
+        let mut hit = false;
+        for line in &lines[s..e] {
+            if let Some((tok, rest)) = field_kv(line)
+                && field_matches(&tok, field)
+            {
+                hit = true;
+                if samples.len() < limit {
+                    // classify_value 只输出值的类型/长度（字符串折叠为 str<N>），
+                    // 从不输出原文，因此字符串字段同样可安全抽样。
+                    samples.push(format!("char {cid}: {tok} -> {}", classify_value(rest)));
+                }
+            }
+        }
+        if hit {
+            hit_chars += 1;
+        }
+    });
+    let mut report =
+        format!("字段 {field} 抽样（最多 {limit}）\n命中人物数: {hit_chars}\n\n样本:\n");
+    for s in &samples {
+        report.push_str(&format!("  {s}\n"));
+    }
+    fs::create_dir_all(out).map_err(|e| format!("创建调试目录失败: {e}"))?;
+    let out_path = out.join(format!("sample_{field}.txt"));
+    fs::write(&out_path, &report).map_err(|e| format!("写 sample_field 失败: {e}"))?;
+    println!(
+        "字段 {field}: 命中人物 {hit_chars}，抽样 {} 条，报告写入 {}",
+        samples.len(),
+        out_path.display()
+    );
+    Ok(())
 }
 
 fn main() {
@@ -975,6 +1533,43 @@ fn main() {
                 process::exit(2);
             }
             cmd_dump(path, Path::new(&args[3]))
+        }
+        "inspect-character" => {
+            if args.len() < 4 {
+                eprintln!("inspect-character 需要 <character-id>");
+                process::exit(2);
+            }
+            let mut rest: Vec<String> = args[3..].to_vec();
+            let out = take_out_dir(&mut rest);
+            cmd_inspect_character(path, &rest[0], &out)
+        }
+        "inspect-token" => {
+            if args.len() < 4 {
+                eprintln!("inspect-token 需要 <token>");
+                process::exit(2);
+            }
+            let mut rest: Vec<String> = args[3..].to_vec();
+            let out = take_out_dir(&mut rest);
+            cmd_inspect_token(path, &rest[0], &out)
+        }
+        "find-references" => {
+            if args.len() < 4 {
+                eprintln!("find-references 需要 <character-id>");
+                process::exit(2);
+            }
+            let mut rest: Vec<String> = args[3..].to_vec();
+            let out = take_out_dir(&mut rest);
+            cmd_find_references(path, &rest[0], &out)
+        }
+        "sample-field" => {
+            if args.len() < 4 {
+                eprintln!("sample-field 需要 <field-or-token>");
+                process::exit(2);
+            }
+            let mut rest: Vec<String> = args[3..].to_vec();
+            let out = take_out_dir(&mut rest);
+            let limit = take_limit(&mut rest, 20);
+            cmd_sample_field(path, &rest[0], limit, &out)
         }
         _ => {
             eprintln!("未知子命令: {cmd}");

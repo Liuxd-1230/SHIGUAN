@@ -35,6 +35,9 @@ data/
 # ---- 项目内部数据（不进版本库） ----
 .workbuddy/
 
+# ---- 真实 CK3 令牌表（Paradox 游戏资产，禁止随仓库分发；由用户本地提取） ----
+tools/ck3-reader/tokens/*_real.txt
+
 # ---- 测试与覆盖 ----
 .pytest_cache/
 pytest-cache-files-*/
