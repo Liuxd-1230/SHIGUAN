@@ -1,0 +1,150 @@
+"""API 集成测试（对齐规范九端点）。
+
+- 列表 / 监听：用临时目录（无需真实存档）。
+- inspect / mods / parse / characters：登记真实 autosave 经 SaveRegistry，按需 melt。
+  真实存档缺失或 reader 缺失时整体跳过（CI 友好）。
+"""
+import os
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.routers import saves as saves_router
+
+# 真实存档样本不进仓库；用环境变量 SHIGUAN_TEST_SAVE 指向本机真实存档。
+# 默认占位路径不存在，CI/无样本环境下测试整体跳过（本地路径（含用户名）不外泄到源码）。
+DEFAULT_TEST_SAVE = Path(os.environ.get("SHIGUAN_TEST_SAVE", "fixtures/ck3/autosave.ck3"))
+READER = __import__("app.config", fromlist=["resolve_reader_binary"]).resolve_reader_binary()
+HAVE_FULL = READER is not None and Path(READER).exists() and DEFAULT_TEST_SAVE.exists()
+
+client = TestClient(app)
+
+
+@pytest.fixture
+def real_save_id():
+    if not HAVE_FULL:
+        pytest.skip("需要 ck3-reader 与真实存档样本")
+    rec = saves_router._registry.register(str(DEFAULT_TEST_SAVE))
+    yield rec.save_id
+    saves_router._registry.remove(rec.save_id)
+
+
+def test_health():
+    r = client.get("/api/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
+def test_settings_paths():
+    r = client.get("/api/settings/paths")
+    assert r.status_code == 200
+    assert "saves_dir" in r.json()
+
+
+def test_settings_put_invalid_dir():
+    r = client.put("/api/settings/paths", json={"saves_dir": "C:/no/such/dir/here"})
+    assert r.status_code == 400
+
+
+def test_local_saves_list(tmp_path, monkeypatch):
+    (tmp_path / "autosave.ck3").write_bytes(b"SAV0101" + b"\x00" * 20)
+    (tmp_path / "manual.ck3").write_bytes(b"SAV0101" + b"\x00" * 10)
+    monkeypatch.setenv("SHIGUAN_CK3_SAVES_DIR", str(tmp_path))
+    r = client.get("/api/local-saves")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert len(body["saves"]) == 2
+    # 前端只拿到 saveId + 文件名，绝不含本地全路径
+    s = body["saves"][0]
+    assert "saveId" in s and "fileName" in s
+    assert "C:/" not in str(s)
+    assert "E:/" not in str(s)
+
+
+def test_local_saves_rescan(tmp_path, monkeypatch):
+    (tmp_path / "autosave.ck3").write_bytes(b"SAV0101" + b"\x00" * 20)
+    monkeypatch.setenv("SHIGUAN_CK3_SAVES_DIR", str(tmp_path))
+    r = client.post("/api/local-saves/rescan")
+    assert r.status_code == 200
+    assert len(r.json()["saves"]) == 1
+
+
+def test_watch_start_stop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SHIGUAN_CK3_SAVES_DIR", str(tmp_path))
+    r = client.post("/api/local-saves/watch/start", params={"interval": 0.1})
+    assert r.status_code == 200 and r.json()["running"] is True
+    (tmp_path / "autosave.ck3").write_bytes(b"SAV0101" + b"\x00" * 30)
+    time_sleep()
+    st = client.get("/api/local-saves/watch/status")
+    assert st.json()["running"] is True
+    sp = client.post("/api/local-saves/watch/stop")
+    assert sp.json()["running"] is False
+
+
+def time_sleep():
+    import time
+
+    time.sleep(0.35)
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_inspect(real_save_id):
+    r = client.get(f"/api/local-saves/{real_save_id}/inspect")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["encoding"] == "Binary"
+    assert b["game_version"] == "1.19.0.6"
+    assert b["mod_count"] == 33
+    assert b["character_count"] == 35078
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_mods_report(real_save_id):
+    r = client.get(f"/api/local-saves/{real_save_id}/mods")
+    assert r.status_code == 200
+    rep = r.json()["report"]
+    assert rep["required_count"] == 33
+    # 真实安装下大部分 Mod 应能在本地 mod/ 找到（或全部 missing 取决于环境）
+    assert "missing_count" in rep and "localization_available" in rep
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_parse_and_characters(real_save_id):
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["character_count"] == 35078
+    assert body["mod_count"] == 33
+    assert "game_data" in body
+    assert "localization" in body
+    # 分页人物摘要
+    r2 = client.get(
+        "/api/saves/{}/characters".format(real_save_id),
+        params={"limit": 10, "offset": 0},
+    )
+    assert r2.status_code == 200
+    page = r2.json()
+    assert page["total"] == 35078
+    assert len(page["items"]) == 10
+    assert page["items"][0]["id"] == "6432"
+    # 单人物档案
+    cid = page["items"][0]["id"]
+    r3 = client.get("/api/saves/{}/characters/{}".format(real_save_id, cid))
+    assert r3.status_code == 200
+    prof = r3.json()
+    assert prof["id"] == cid
+    # 文化字段：占位 token 表下为字符串键或 token-id（不崩溃、不伪造）
+    assert prof["culture"] is not None
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_delete_save(real_save_id):
+    r = client.delete(f"/api/saves/{real_save_id}")
+    assert r.status_code == 200
+    assert r.json()["removed"] is True
+    # 删除后 inspect 应 404
+    r2 = client.get(f"/api/local-saves/{real_save_id}/inspect")
+    assert r2.status_code == 404

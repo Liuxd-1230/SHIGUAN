@@ -66,6 +66,8 @@ export interface EntityRef {
   type?: string;
   /** 在解析后存档数据中的来源路径，用于史料溯源。 */
   sourcePath?: string;
+  /** resolved=false 表示该引用当前只能以原始 id / 键表示（占位 token 表下 enum 字段为数字/token-id，或本地化未命中），未伪造可读名。 */
+  resolved?: boolean;
 }
 
 /** 对人物的轻量引用，用于关系网与列表，避免嵌套整份档案。 */

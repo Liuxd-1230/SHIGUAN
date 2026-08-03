@@ -17,6 +17,7 @@ import type {
   ParsedSaveMeta,
 } from "@shiguan/save-schema";
 import { mockCharacterRepository } from "./lib/characterRepository";
+import { realCharacterRepository } from "./lib/realRepository";
 import { initialParseStages } from "./lib/mockParse";
 
 export type ParseStageStatus =
@@ -78,6 +79,11 @@ interface AppState {
   /** 按人物 id 区分的档案请求状态（替代旧的全局 profileLoadStatus）。 */
   profileRequestStateById: Record<string, ProfileRequestState>;
 
+  // —— 真实后端模式（Phase 2A）——
+  // backendMode=true 时，loadProfile / ensureIndex 走 RealCharacterRepository；
+  // 后端不可用时保持 false，沿用 Mock 演示流程（行为与之前完全一致）。
+  backendMode: boolean;
+
   // —— 选择页筛选（独立于路由，返回时保留）——
   query: string;
   rulerOnly: boolean;
@@ -89,6 +95,9 @@ interface AppState {
   // —— actions ——
   setIndex: (meta: ParsedSaveMeta, index: CharacterSummary[]) => void;
   loadProfile: (id: string) => Promise<void>;
+  /** 按当前模式载入索引：真实模式走后端，否则 Mock。供路由刷新恢复使用。 */
+  ensureIndex: () => Promise<void>;
+  setBackendMode: (b: boolean) => void;
   setSelectedId: (id: string | null) => void;
   setQuery: (q: string) => void;
   setRulerOnly: (b: boolean) => void;
@@ -111,6 +120,8 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectedCharacterId: null,
   profileRequestStateById: {},
+
+  backendMode: false,
 
   query: "",
   rulerOnly: false,
@@ -143,7 +154,9 @@ export const useStore = create<AppState>((set, get) => ({
 
     const promise = (async () => {
       try {
-        const profile = await mockCharacterRepository.loadProfile(id);
+        const profile = get().backendMode
+          ? await realCharacterRepository.loadProfile(id)
+          : await mockCharacterRepository.loadProfile(id);
         // 仅当本次请求仍为该人物最新时才写入；旧请求不得覆盖新结果。
         if (profileReqSeqById[id] !== requestId) return;
         set((s) => ({
@@ -176,6 +189,15 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSelectedId: (id) => set({ selectedCharacterId: id }),
+
+  setBackendMode: (b) => set({ backendMode: b }),
+
+  ensureIndex: async () => {
+    if (get().indexLoaded) return;
+    const repo = get().backendMode ? realCharacterRepository : mockCharacterRepository;
+    const { meta, characterIndex } = await repo.loadIndex();
+    set({ saveMeta: meta, characterIndex, indexLoaded: true });
+  },
   setQuery: (q) => set({ query: q }),
   setRulerOnly: (b) => set({ rulerOnly: b }),
   clearProfileRequest: (id) =>

@@ -128,6 +128,9 @@ class EntityRef(BaseModel):
     name: str
     type: Optional[str] = None
     sourcePath: Optional[str] = None
+    # resolved=False 表示该引用当前只能以原始 id / 键表示（占位 token 表下 enum 字段
+    # 为数字/token-id，或本地化未命中），未伪造可读名。
+    resolved: bool = True
 
 
 class CharacterRef(BaseModel):

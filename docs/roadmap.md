@@ -145,7 +145,50 @@
 
 ---
 
-## Phase 2 —— 存档解析 MVP
+## Phase 2A —— 本地 CK3 存档库、解析器评估与 Mod 感知解析 MVP（✅ 本轮已完成）
+
+> 范围边界（硬性）：用户不玩铁人，铁人支持非本轮验收目标，但必须支持用户实际存档所用的二进制 SAV0101 格式。不接入 LLM / 不生成传记正文 / 不实现地图和家族树。
+
+完成项：
+- ✅ 解析技术 Spike（实测定方案）：`tools/ck3-reader`（基于 `ck3save 0.4.3` + `jomini`，Rust sidecar，MIT）melt 真实二进制 SAV0101（1.19.0.6，62MB）；占位全量 token 表（65536 条）使仓库可独立构建，melt 完整、未知 token=0；结论见 `docs/parser-evaluation.md`。
+- ✅ FastAPI 后端（`apps/server`）：`adapters/`（protocol 头检测 + Ck3ReaderAdapter subprocess 安全调用，超时/退出码/stderr 捕获、不 shell=True）、`services/`（LocalSaveDiscovery / ModResolver / CharacterExtractor / DirectoryWatcher / GameDataResolver / SaveRegistry / LocalizationLoader / SettingsStore）、`routers/saves.py`（health/settings/paths/local-saves 全套 + watch + inspect/mods/parse + characters/{cid} + DELETE）。
+- ✅ 本地存档自动发现：默认 Windows Known Folder（不硬编码），支持普通/OneDrive/手动/自定义；扫描 `.ck3` 返回 stable id/fileName/size/modified/isAutosave/游戏版本/日期/状态/Mod 数/解析状态。
+- ✅ 目录监听（可关闭）：新增/覆盖/autosave 更新/删除/重命名；写入中不得解析——`wait_until_stable()` 只读 stat 等稳定再复制副本，绝不长期占用原存档。
+- ✅ Mod 感知：`ModCompatibilityReport`（required/found/missing/version_mismatch/corrupted/localization_available/playset_diff）；真实存档实测 33 Mod（全 ugc_），本机找到 33 / 缺失 0 / 损坏 0 / 版本不匹配 27；缺失/损坏/未知字段不阻断、不崩溃。
+- ✅ 人物索引与按需 Profile：真实存档 35,078 人物；仅 melt 一次，按需生成单角色档案，不一次性生成全部；`EntityRef.resolved` 标记未解析字段，不伪造名称。
+- ✅ 前端后端双模式：`LocalSavesPanel` + `api.ts` + `realRepository` + `store.backendMode`；后端不可用时整块不渲染、回退 Mock 演示。
+- ✅ 数据契约同步：`EntityRef.resolved` 在 TS（`save-schema`）与 Python 同步；`save-schema` 契约测试 19 项通过。
+- ✅ 测试（全绿）：后端 pytest **45**（单元 + 真实 62MB 集成，集成须 `SHIGUAN_TEST_SAVE` 环境变量，默认占位避免泄露本地路径）；前端 `tsc` 0 错 / `eslint` 0 错 0 警告 / `vite build` 437 模块 / Vitest **99**；save-schema 契约 19。
+- ✅ 安全：真实存档经 `.gitignore`（`*.ck3`/`data/`）排除；源码硬编码本地路径已改为环境变量；汇报见 `docs/phase2a-report.md`。
+- ⚠️ 限制（诚实披露）：enum 字段（信仰/王朝/头衔）中文化需真实 token 表（rakaly 从 Ck3.exe 导出，按 PDS 限制不随项目分发），当前以数字呈现不伪造；铁人未做；LLM/地图/家族树未做。
+
+---
+
+## Phase 2B —— 后续（真实 token 中文化 / 传记管线 / 地图家族树）
+
+> Phase 2 的「后端 + 真实解析 MVP」已在 Phase 2A 完成（见上）。本节为 Phase 2B 及以后剩余项。
+
+1. 初始化 `apps/server`（FastAPI + Pydantic + SQLite）—— **已在 Phase 2A 落地**。
+2. 实现 `SaveParserAdapter` 协议与 `PlaintextAdapter`（自研 Python PDX 文本解析器，覆盖人物相关字段）—— 协议已落地；明文适配器分支待接。
+3. 实现 `RakalyCliAdapter` 或真实 token 表接入（检测二进制/铁人，melt 后语义名中文化）—— Phase 2A 用 ck3save sidecar + 占位 token 表，真实 token 表替换可得中文信仰/王朝/头衔。
+4. 文件检测（`inspect`）、解压、格式转换、人物索引、本地化加载 —— **已在 Phase 2A 落地**。
+5. 标准人物档案：基本信息、家庭关系、当前/历史头衔、基础时间线 —— 基础字段已落地，扩展字段（性别/关系/头衔/死亡历史）为后续。
+6. 解析测试（无效/空/压缩/纯文本/不支持二进制/缺解析器/非 UTF-8/超大/重复键）—— **已在 Phase 2A 落地**。
+7. 后端与前端打通上传→解析→选择→传记的纵向链路 —— **基础链路已在 Phase 2A 落地（LocalSavesPanel → 后端 → 传记页）**。
+
+---
+
+## Phase 2 —— 存档解析 MVP（原总体计划，已被 Phase 2A / 2B 取代）
+
+> 以下为早期总体计划，供对照；实际落地以 Phase 2A（已完成）与 Phase 2B（后续）为准。
+
+1. 初始化 `apps/server`（FastAPI + Pydantic + SQLite）。
+2. 实现 `SaveParserAdapter` 协议与 `PlaintextAdapter`（自研 Python PDX 文本解析器，覆盖人物相关字段）。
+3. 实现 `RakalyCliAdapter`（检测二进制/铁人，调用外部 `rakaly` melt，缺失显式报错）。
+4. 文件检测（`inspect`）、解压、格式转换、人物索引、本地化加载。
+5. 标准人物档案：基本信息、家庭关系、当前/历史头衔、基础时间线。
+6. 解析测试（无效/空/压缩/纯文本/不支持二进制/缺解析器/非 UTF-8/超大/重复键）。
+7. 后端与前端打通上传→解析→选择→传记的纵向链路。
 
 1. 初始化 `apps/server`（FastAPI + Pydantic + SQLite）。
 2. 实现 `SaveParserAdapter` 协议与 `PlaintextAdapter`（自研 Python PDX 文本解析器，覆盖人物相关字段）。
@@ -183,7 +226,7 @@
 1. **铁人存档本地解码依赖用户自备令牌表**：无令牌且不愿用远程时，ironman 无法本地解析。需在 UI 明确引导。
 2. **自研 PDX 文本解析器的健壮性**：需覆盖补丁间语法漂移与超大文件；Phase 2 起用真实存档样本持续校准。
 3. **jomini JS/WASM 备选未验证**：若 Python 文本解析在大存档上性能不足，后续可评估前端/Node 直解。
-4. **Rakaly CLI 具体许可证与分发条款**：部署前须再次核实，避免合规风险。
+4. **Rakaly 仅作真实 token 表导出来源**：主解析库 `ck3save`/`jomini` 均为 **MIT**（已核实，从 Cargo 源码构建，不复制源码、不下载预编译 exe）；rakaly 仅用于导出真实 token 表（按 PDS 限制不随项目分发），合规风险已排除。
 5. **~~未做 TS 类型检查 / eslint / vite build~~**：TS 严格类型检查已在 Phase 0.5 建立；`vite build` 早在 Phase 1A 通过；ESLint 8 链路已于 Phase 1C 建立（`npm run lint` / `lint:fix`）。前端静态检查链（tsc + eslint + vite build）现已完整。
 
 ---

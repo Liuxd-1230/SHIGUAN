@@ -1,0 +1,9 @@
+[package]
+name = "ck3-reader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ck3save = "0.4.3"
+serde = "1.0.229"
+serde_json = "1.0.151"

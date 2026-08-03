@@ -4,6 +4,7 @@ import MuseumSurface from "../components/MuseumSurface";
 import SealButton from "../components/SealButton";
 import InkDivider from "../components/InkDivider";
 import AssetImage from "../components/AssetImage";
+import LocalSavesPanel from "../components/LocalSavesPanel";
 import { SealMark } from "../components/icons";
 
 export default function StartPage() {
@@ -75,7 +76,11 @@ export default function StartPage() {
       </div>
 
       <InkDivider variant="seal" className="my-6" />
-      <p className="text-center text-xs text-ink-500">
+
+      {/* 本地存档浏览器（后端可用时显示；后端未启动则自动隐藏，继续 Mock 演示） */}
+      <LocalSavesPanel />
+
+      <p className="mt-6 text-center text-xs text-ink-500">
         <button
           type="button"
           onClick={() => navigate(ROUTES.designlab)}

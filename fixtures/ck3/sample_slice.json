@@ -1,0 +1,70 @@
+{
+  "_note": "本文件为真实存档 autosave.ck3（CK3 1.19.0.6，SAV0101 二进制自动存档）的切片采样，用于离线解析验收。非完整存档，不含本地路径/密钥。仅供测试与文档演示。",
+  "source_save": "autosave.ck3",
+  "game_version": "1.19.0.6",
+  "save_version": "15",
+  "date": "762.1.1",
+  "player_name": "节度使，李瑀",
+  "encoding": "Binary",
+  "character_count": 35078,
+  "dead_character_count": 0,
+  "unknown_token_count": 0,
+  "mod_count": 33,
+  "mods_sample": [
+    "mod/ugc_3598735569.mod",
+    "mod/ugc_3597658756.mod",
+    "mod/ugc_2222302033.mod"
+  ],
+  "character_sample": [
+    {
+      "alive": true,
+      "birth": "726.1.1",
+      "culture": "asian_han_chinese",
+      "death": null,
+      "dynasty": "9067",
+      "faith": "41",
+      "id": "6432",
+      "name": "Hua_83EF"
+    },
+    {
+      "alive": true,
+      "birth": "726.1.1",
+      "culture": "asian_han_chinese",
+      "death": null,
+      "dynasty": "9039",
+      "faith": null,
+      "id": "6433",
+      "name": "Shunxian_9806_5148"
+    },
+    {
+      "alive": true,
+      "birth": "726.1.1",
+      "culture": "asian_han_chinese",
+      "death": null,
+      "dynasty": "9836",
+      "faith": null,
+      "id": "6434",
+      "name": "Yuan_539F"
+    },
+    {
+      "alive": true,
+      "birth": "726.1.1",
+      "culture": "asian_han_chinese",
+      "death": null,
+      "dynasty": "9898",
+      "faith": null,
+      "id": "6435",
+      "name": "Zhongrong_4EF2_5BB9"
+    },
+    {
+      "alive": true,
+      "birth": "726.1.1",
+      "culture": "asian_han_chinese",
+      "death": null,
+      "dynasty": "9898",
+      "faith": null,
+      "id": "6436",
+      "name": "Jixiong_5B63_718A"
+    }
+  ]
+}

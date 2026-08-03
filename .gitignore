@@ -12,6 +12,10 @@ __pycache__/
 venv/
 *.egg-info/
 
+# ---- Rust 构建产物（ck3-reader sidecar） ----
+target/
+**/target/
+
 # ---- 环境变量（含密钥，绝对禁止提交） ----
 .env
 .env.*
@@ -33,6 +37,9 @@ data/
 
 # ---- 测试与覆盖 ----
 .pytest_cache/
+pytest-cache-files-*/
+**/pytest-cache-files-*/
+pytest_*.txt
 .coverage
 htmlcov/
 coverage/

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, MotionConfig } from "framer-motion";
 import { useStore } from "./store";
 import { useRoute, navigate, ROUTES } from "./lib/router";
-import { mockCharacterRepository } from "./lib/characterRepository";
 import Header from "./components/Header";
 import StartPage from "./pages/StartPage";
 import ParsePage from "./pages/ParsePage";
@@ -35,7 +34,6 @@ function NotFoundPage() {
 export default function App() {
   const route = useRoute();
   const indexLoaded = useStore((s) => s.indexLoaded);
-  const setIndex = useStore((s) => s.setIndex);
   // 传记页标题需要人物名（索引摘要或已载入档案）。
   const bioName = useStore((s) => {
     if (route.name !== "bio") return undefined;
@@ -53,10 +51,11 @@ export default function App() {
     if (route.name !== "select" && route.name !== "bio") return;
     if (indexLoaded) return;
     let cancelled = false;
-    mockCharacterRepository
-      .loadIndex()
-      .then(({ meta, characterIndex }) => {
-        if (!cancelled) setIndex(meta, characterIndex);
+    useStore
+      .getState()
+      .ensureIndex()
+      .then(() => {
+        /* 状态已由 ensureIndex 写入 store */
       })
       .catch((e) => {
         if (!cancelled) {
@@ -66,7 +65,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [route.name, indexLoaded, setIndex]);
+  }, [route.name, indexLoaded]);
 
   // 页面标题随路由更新（含传记页人物名）。减少无谓刷新：仅依赖路径与人物名。
   useEffect(() => {
@@ -130,6 +129,7 @@ export default function App() {
         <Header />
         <main
           id="main-content"
+          ref={mainRef}
           tabIndex={-1}
           className="flex-1 outline-none"
         >
