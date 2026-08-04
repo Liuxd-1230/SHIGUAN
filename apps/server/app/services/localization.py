@@ -27,8 +27,9 @@ _LANG_DIR_TO_TAG = {
 # 解析回退顺序（最优先简中，其次英文，最后原 key）
 _FALLBACK_CHAIN = ["zh-Hans", "en"]
 
-_LANG_HEADER_RE = re.compile(r"^l_(?P<lang>[a-z_]+)\s*:", re.IGNORECASE)
-_ENTRY_RE = re.compile(r'^(?P<key>[A-Za-z0-9_]+)\s*:\s*"(?P<val>(?:[^"\\]|\\.)*)"')
+_LANG_HEADER_RE = re.compile(r"^l_(?P<lang>[a-z_]+):\s*(?:#.*)?$")
+# 条目键允许连字符（如 Abdul-Azeem）；值前可带 PDX 版本号（如 dynn_liang205:0 "梁"）。
+_ENTRY_RE = re.compile(r'^(?P<key>[A-Za-z0-9_-]+)\s*:\s*(?:\d+\s*)?\s*"(?P<val>(?:[^"\\]|\\.)*)"')
 
 
 class LocalizationLoader:

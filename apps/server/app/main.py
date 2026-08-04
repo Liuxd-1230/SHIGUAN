@@ -87,6 +87,25 @@ async def _unified_error(request: Request, exc: HTTPException):
     return await http_exception_handler(request, exc)
 
 
+@app.exception_handler(Exception)
+async def _unhandled_error(request: Request, exc: Exception):
+    """任何未捕获异常的兜底：返回统一 JSON 500（含 CORS 头）。
+
+    此前未捕获异常会逃逸到 Starlette 的 ServerErrorMiddleware，产生**无 CORS 头**的
+    纯文本 500，浏览器因跨域读不到响应体而显示 "Failed to fetch"（真实用户报告）。
+    这里兜底保证前端永远拿到可读的统一错误体；不泄露 traceback（规范十二）。
+    """
+    import logging
+
+    logging.getLogger("shiguan").exception(
+        "未捕获异常 %s %s", request.method, request.url.path
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "internal_error", "message": "服务器内部错误，请查看服务日志。"}},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_default_cors_origins(),

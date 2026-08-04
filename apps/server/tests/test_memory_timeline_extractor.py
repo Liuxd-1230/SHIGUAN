@@ -163,8 +163,11 @@ def test_relative_died_attributed_to_dead_relation_with_death_event():
     assert tl[0].evidence[0].sourceType == "memory"
 
 
-def test_battle_won_event_with_location_and_no_fabricated_when_dataless():
-    """battle_won_memory → WAR（含战场位置）；无日期记忆只进列表不生成事件。"""
+def test_battle_won_not_in_timeline_but_kept_in_memories():
+    """battle_* 单场小战役（2C.1）：不进时间线，但 memories 列表保留原始记录。
+
+    无日期记忆也只进列表不生成事件；battle 战场位置仍在 memories 条目上。
+    """
     raw = {
         "memories": [
             _memory("70", "battle_won_memory", [("loser", "3"), ("ruler", "1")],
@@ -175,15 +178,34 @@ def test_battle_won_event_with_location_and_no_fabricated_when_dataless():
     }
     idx = MemoryTimelineIndex(raw, by_id=BY_ID, loc=LOC)
     tl = idx.timeline_events("1")
-    assert len(tl) == 1  # 只有带日期的生成时间线事件
-    assert tl[0].type.value == "war"
-    assert tl[0].location is not None
-    assert tl[0].location.id == "6473"
-    assert tl[0].relatedCharacters[0].id == "3"
-    # 两条都进 memories 列表（无日期那条 date=None，诚实呈现）。
+    assert tl == []  # battle_* 不进时间线
+    # 两条都进 memories 列表（无日期那条 date=None，诚实呈现），带战场位置。
     mems = idx.memories("1")
     assert len(mems) == 2
     assert {m.date for m in mems} == {"790.1.1", None}
+    located = next(m for m in mems if m.location is not None)
+    assert located.location.id == "6473"
+    assert located.type.value == "war"
+
+
+def test_war_won_in_timeline_with_opponent_name():
+    """war_won → 主要战争进时间线，标题带胜负、描述带对手名。"""
+    raw = {
+        "memories": [
+            _memory("72", "war_won", [("winner", "1"), ("loser", "3")], "792.5.5", None),
+            _memory("73", "offensive_war", [("other_party", "3")], "793.6.6", None),
+        ],
+        "warnings": [],
+    }
+    idx = MemoryTimelineIndex(raw, by_id=BY_ID, loc=LOC)
+    tl = idx.timeline_events("1")
+    assert len(tl) == 1
+    assert tl[0].type.value == "war"
+    assert tl[0].title == "战争获胜"
+    assert "卡罗尔" in tl[0].description  # 对手名经索引解析，不裸 id
+    assert tl[0].relatedCharacters[0].id == "3"
+    # offensive_war 主体是 other_party(3)，与 cid=1 不匹配 → 不归属到 Alice。
+    assert all(e.id != "1-memory-73" for e in tl)
 
 
 def test_skipped_types_are_not_attributed():
@@ -206,7 +228,7 @@ def test_name_resolution_falls_back_honestly():
     """名字解析：不在索引中的 id → name=原 id（不伪造）。"""
     raw = {
         "memories": [
-            _memory("90", "battle_won_memory", [("loser", "999"), ("ruler", "1")], "790.1.1", None),
+            _memory("90", "war_won", [("winner", "1"), ("loser", "999")], "790.1.1", None),
         ],
         "warnings": [],
     }

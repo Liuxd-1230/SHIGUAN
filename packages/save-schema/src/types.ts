@@ -271,6 +271,8 @@ export interface EvidenceWarning {
 export interface CharacterProfile {
   id: string;
   name: string;
+  /** 2C.1：绰号（如 nick_the_peaceful→「仁」）。未解析时如实为空。 */
+  nickname?: EntityRef;
   sex?: Sex;
   birthDate?: string;
   deathDate?: string;
@@ -290,6 +292,10 @@ export interface CharacterProfile {
   spouses: RelationshipPeriod[];
   children: CharacterRef[];
   siblings: CharacterRef[];
+  /** 2C.1：君主（仅 dead_data 子块实测存在，卒年记录其君主）；无则 undefined。 */
+  liege?: CharacterRef;
+  /** 2C.1：血缘远近 + 姻亲（祖辈/叔伯姑舅/堂表亲/侄甥/姻亲），均推断并如实标注。 */
+  relatives: CharacterRef[];
 
   friends: CharacterRef[];
   rivals: CharacterRef[];
@@ -314,6 +320,8 @@ export interface CharacterProfile {
 export interface CharacterSummary {
   id: string;
   name: string;
+  /** 2C.1：绰号（如 nick_the_peaceful→「仁」）。未解析时如实为空。 */
+  nickname?: EntityRef;
   sex?: Sex;
   birthDate?: string;
   deathDate?: string;

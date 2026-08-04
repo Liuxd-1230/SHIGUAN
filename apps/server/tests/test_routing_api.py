@@ -132,10 +132,11 @@ class FakeAdapter:
                     "battle_location_id": None,
                 },
                 {
+                    # 2C.1：battle_* 小战役不再进时间线；war_won 整场战争才进时间线并带对手。
                     "id": "102",
-                    "memory_type": "battle_won_memory",
-                    "participants": [{"role": "loser", "character_id": "3"},
-                                     {"role": "ruler", "character_id": "1"}],
+                    "memory_type": "war_won",
+                    "participants": [{"role": "winner", "character_id": "1"},
+                                     {"role": "loser", "character_id": "3"}],
                     "creation_date": "790.1.1",
                     "end_date": "920.1.1",
                     "battle_location_id": "6473",
@@ -364,6 +365,22 @@ def test_import_ok_unique_name(client, tmp_path):
     r2 = c.post("/api/local-saves/import", files={"file": ("my.ck3", b"SAV0101" + b"\x00" * 5)})
     assert r2.status_code == 200
     assert r2.json()["saveId"] != r.json()["saveId"]
+
+
+def test_import_accepts_plain_text_and_unified_headers(client, tmp_path):
+    """Phase 2C：明文(SAV0102) 与统一二进制(SAV0103) 头也应能导入。
+
+    此前只认 SAV0101 / zip 容器，明文手动存档会被拒为 bad_header。
+    """
+    c, _a, reg, _s = client
+    for hdr in (b"SAV0102", b"SAV0103"):
+        r = c.post("/api/local-saves/import", files={"file": ("text.ck3", hdr + b"abc123\nmeta_dummy")})
+        assert r.status_code == 200, (hdr, r.json())
+        assert r.json()["status"] == "imported"
+    # 未知头仍拒绝
+    r2 = c.post("/api/local-saves/import", files={"file": ("bad.ck3", b"SAV0109xyz")})
+    assert r2.status_code == 400
+    assert r2.json()["error"]["code"] == "bad_header"
 
 
 def test_import_rejects_oversize(client, tmp_path, monkeypatch):

@@ -106,6 +106,8 @@ const K_DEAD_DATA: &[&str] = &["dead_data", "t2750"];
 const K_DEATH_DATE: &[&str] = &["date", "t06b5"];
 const K_DEATH_REASON: &[&str] = &["reason", "t2b64"];
 const K_KILLER: &[&str] = &["killer", "t2766"];
+// 2C.1：君主（liege）。实测仅见于 dead_data 子块内（卒年记录其君主），真实令牌 10541。
+const K_LIEGE: &[&str] = &["liege", "t292d"];
 
 // —— 统治判定 ——
 const K_LANDED_DATA: &[&str] = &["landed_data", "t2753"];
@@ -313,6 +315,9 @@ struct CharacterRecord {
     former_concubinists: Vec<String>,
     #[serde(default)]
     former_concubines: Vec<String>,
+    // —— Phase 2C.1 新增：君主（仅 dead_data 子块实测存在，卒年记录其君主）——
+    #[serde(default)]
+    liege: Option<String>,
 }
 
 impl CharacterRecord {
@@ -355,6 +360,7 @@ impl CharacterRecord {
             concubinist: None,
             former_concubinists: Vec::new(),
             former_concubines: Vec::new(),
+            liege: None,
         }
     }
 }
@@ -376,8 +382,73 @@ fn try_parse_metadata(data: &[u8]) -> bool {
     false
 }
 
-/// melt 二进制存档为明文。返回 (明文, 未知 token 数)。
+/// 读取存档头部的 kind（SAV01XX 中 XX 两位十六进制）。
+/// 头布局（ck3save SaveHeader）：`SAV` + 2 字节 unknown + 2 hex kind + 8 字节 random + 8 hex meta_len + \n。
+/// kind：0=Text（完全明文）、1=Binary、2=UnifiedText（明文 meta + raw-deflate 压缩 gamestate）、
+/// 3=UnifiedBinary、4=SplitText、5=SplitBinary。
+fn save_kind(data: &[u8]) -> Result<u16, String> {
+    if data.len() < 24 {
+        return Err("存档头不完整".to_string());
+    }
+    let kind_hex =
+        std::str::from_utf8(&data[5..7]).map_err(|_| "存档头 kind 非 ASCII".to_string())?;
+    u16::from_str_radix(kind_hex, 16).map_err(|_| format!("存档头 kind 非法: {kind_hex}"))
+}
+
+/// 把 SAV0102 明文存档（kind 2/4：明文 meta + raw-deflate 压缩 gamestate）解压为明文文本。
+/// 返回 (完整明文 = 头 + [未压缩 meta 若为 SplitText] + 解压后的 gamestate, 未知 token 数=0)。
+fn inflate_text_save(data: &[u8], kind: u16) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    // gamestate 关键字在 meta 区之后；从 header_len + meta_len 起找，避开 meta 内同名引用。
+    let meta_len = if data.len() >= 23 {
+        std::str::from_utf8(&data[15..23])
+            .ok()
+            .and_then(|s| u64::from_str_radix(s, 16).ok())
+            .unwrap_or(0) as usize
+    } else {
+        0
+    };
+    let header_len = if data.get(23) == Some(&b'\r') { 25 } else { 24 };
+    let search_from = (header_len + meta_len).min(data.len());
+    let gs = data[search_from..]
+        .windows(b"gamestate".len())
+        .position(|w| w == b"gamestate")
+        .ok_or_else(|| "明文存档中未找到 gamestate 关键字".to_string())?
+        + search_from;
+    let blob_start = gs + b"gamestate".len();
+    let mut decoder = flate2::read::DeflateDecoder::new(&data[blob_start..]);
+    let mut out = Vec::with_capacity(meta_len * 2 + 8);
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| format!("明文 gamestate 解压失败: {e}"))?;
+    // 头（24 字节：SAV01 + kind + random + meta_len + \n）原样保留，与 melt 产物结构一致。
+    let mut full = Vec::with_capacity(header_len + out.len());
+    full.extend_from_slice(&data[..header_len]);
+    if kind == 4 {
+        // SplitText：未压缩 meta 在文件头与 gamestate 之间，需拼回。
+        full.extend_from_slice(&data[header_len..gs]);
+    }
+    full.extend_from_slice(&out);
+    Ok(full)
+}
+
+/// 把存档规范化为明文 gamestate。返回 (明文, 未知 token 数)。
+///
+/// SAV0101/0103 二进制（kind 1/3/5）→ melt 转明文（token 表反查字段名）；
+/// SAV0102 明文（kind 0/2/4）→ 无需 token 表，直接读取/解压 gamestate 文本，
+/// 与 melt 产物结构一致（头 + gamestate），下游 scan_meta / scan_characters_full /
+/// scan_entities / scan_titles / scan_memories 原样复用，token_source 走 literal_key 分支。
 fn melt_save(data: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    let kind = save_kind(data)?;
+    if kind == 0 {
+        // Text：完全明文，文件内容即“头 + gamestate 文本”。
+        return Ok((data.to_vec(), 0));
+    }
+    if kind == 2 || kind == 4 {
+        // UnifiedText / SplitText：明文 meta + raw-deflate 压缩 gamestate。
+        let text = inflate_text_save(data, kind)?;
+        return Ok((text, 0));
+    }
     let file = Ck3File::from_slice(data).map_err(|e| format!("Ck3File::from_slice 失败: {e}"))?;
     let mut zip_sink: Vec<u8> = Vec::new();
     let parsed = file
@@ -385,7 +456,7 @@ fn melt_save(data: &[u8]) -> Result<(Vec<u8>, usize), String> {
         .map_err(|e| format!("parse 失败: {e}"))?;
     let binary = parsed
         .as_binary()
-        .ok_or_else(|| "存档不是二进制格式（预期 SAV0101 二进制）".to_string())?;
+        .ok_or_else(|| "存档格式无法识别（非 SAV0101/0103 二进制，也非 SAV0102 明文）".to_string())?;
     let melter = binary.melter();
     let melted = melter
         .melt(&EnvTokens)
@@ -835,27 +906,36 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                     } else if line_opens_key(t, K_TRAITS) {
                         list = Some(ListKind::Traits);
                         list_depth = depth;
+                        if let Some(ids) = same_line_brace_ids(line) {
+                            c.traits.extend(ids);
+                            list = None;
+                        }
                     }
                 } else if sub == Some(SubBlock::Family) && depth == sub_depth + 1 {
                     // —— family_data 内 ——
-                    if line_opens_key(t, K_CHILD) {
-                        list = Some(ListKind::Child);
-                        list_depth = depth;
+                    let list_hit = if line_opens_key(t, K_CHILD) {
+                        Some(ListKind::Child)
                     } else if line_opens_key(t, K_SPOUSE) {
-                        list = Some(ListKind::Spouse);
-                        list_depth = depth;
+                        Some(ListKind::Spouse)
                     } else if line_opens_key(t, K_FORMER_SPOUSES) {
-                        list = Some(ListKind::FormerSpouse);
-                        list_depth = depth;
+                        Some(ListKind::FormerSpouse)
                     } else if line_opens_key(t, K_FORMER_CONCUBINISTS) {
-                        list = Some(ListKind::FormerConcubinist);
-                        list_depth = depth;
+                        Some(ListKind::FormerConcubinist)
                     } else if line_opens_key(t, K_FORMER_CONCUBINES) {
-                        list = Some(ListKind::FormerConcubine);
-                        list_depth = depth;
+                        Some(ListKind::FormerConcubine)
                     } else if line_opens_key(t, K_CONCUBINE) {
-                        list = Some(ListKind::Concubine);
+                        Some(ListKind::Concubine)
+                    } else {
+                        None
+                    };
+                    if let Some(kind) = list_hit {
+                        list = Some(kind);
                         list_depth = depth;
+                        // 单行列表（child={ 49459 49846 }）：melt 输出常把列表写在同一行闭合。
+                        if let Some(ids) = same_line_brace_ids(line) {
+                            push_list_ids(c, kind, &ids);
+                            list = None;
+                        }
                     } else {
                         if let Some(v) = extract_kv(t, K_CHILD) {
                             c.children.push(v);
@@ -892,6 +972,10 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                     }
                     if c.killer.is_none() {
                         c.killer = extract_kv(t, K_KILLER);
+                    }
+                    // 2C.1：君主仅实测于 dead_data 子块（卒年记录其君主）。
+                    if c.liege.is_none() {
+                        c.liege = extract_kv(t, K_LIEGE);
                     }
                 }
 
@@ -961,6 +1045,36 @@ fn bare_id_tokens(line: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// 若行是单行花括号列表（打开与闭合在同一行），返回 `{` 与 `}` 之间的裸 id。
+/// melt 输出常把 child/spouse/former_spouses/traits 等列表写为
+/// `child={ 49459 49846 50633 }` 的单行形态，与多行列表（`child={` 换行 id）并存。
+fn same_line_brace_ids(line: &str) -> Option<Vec<String>> {
+    let open = line.find('{')?;
+    let close = line.rfind('}')?;
+    if close < open {
+        return None;
+    }
+    let ids = bare_id_tokens(&line[open + 1..close]);
+    if ids.is_empty() {
+        None
+    } else {
+        Some(ids)
+    }
+}
+
+/// 把已收集的裸 id 列表按类型写入人物记录（与主循环的列表体收集共用同一分发）。
+fn push_list_ids(c: &mut CharacterRecord, kind: ListKind, ids: &[String]) {
+    match kind {
+        ListKind::Child => c.children.extend(ids.iter().cloned()),
+        ListKind::Spouse => c.spouses.extend(ids.iter().cloned()),
+        ListKind::Traits => c.traits.extend(ids.iter().cloned()),
+        ListKind::FormerSpouse => c.former_spouses.extend(ids.iter().cloned()),
+        ListKind::FormerConcubinist => c.former_concubinists.extend(ids.iter().cloned()),
+        ListKind::FormerConcubine => c.former_concubines.extend(ids.iter().cloned()),
+        ListKind::Concubine => c.concubines.extend(ids.iter().cloned()),
+    }
 }
 
 fn capture_id_entry(line: &str) -> Option<String> {
@@ -1330,8 +1444,21 @@ fn find_kv(block: &str, key: &str) -> Option<usize> {
 fn grab_quoted(block: &str, key: &str) -> Option<String> {
     let pos = find_kv(block, key)?;
     let s = &block[pos..];
-    let inner = s.strip_prefix('"')?;
-    inner.find('"').map(|e| inner[..e].to_string())
+    // 等号后可能有空格（key = "value"）；兼容引号与非引号两种值形态。
+    let s = s.trim_start();
+    if let Some(inner) = s.strip_prefix('"') {
+        inner.find('"').map(|e| inner[..e].to_string())
+    } else {
+        // 非引号值（如 key=h_roman_empire）：读到空白 / 右花括号 / 等号为止。
+        let end = s
+            .find(|c: char| c.is_ascii_whitespace() || c == '}' || c == '=' || c == '{')
+            .unwrap_or(s.len());
+        if end == 0 {
+            None
+        } else {
+            Some(s[..end].to_string())
+        }
+    }
 }
 
 fn grab_num(block: &str, key: &str) -> Option<String> {
@@ -3791,5 +3918,149 @@ t3604={
         assert_eq!(m.participants[0].role, "new_relation");
         assert_eq!(m.creation_date.as_deref(), Some("736.1.1"));
         assert_eq!(m.end_date.as_deref(), Some("891.1.1"));
+    }
+
+    // -- SAV0102 明文存档（kind 0 Text / kind 2 UnifiedText）-----------------
+
+    /// 构造存档头：SAV + unknown + kind + random + meta_len(hex) + \n。
+    fn text_header(kind: u16, meta_len: u32) -> Vec<u8> {
+        let mut h = Vec::new();
+        h.extend_from_slice(b"SAV01");
+        h.extend_from_slice(format!("{kind:02x}").as_bytes());
+        h.extend_from_slice(b"12345678");
+        h.extend_from_slice(format!("{meta_len:08x}").as_bytes());
+        h.push(b'\n');
+        h
+    }
+
+    /// 合成明文 gamestate（与 melt 产物同构：meta + character 容器）。
+    fn sample_gamestate_text() -> String {
+        format!(
+            "{}\n{}",
+            "meta_data={\n\tsave_game_version=15\n\tversion=\"1.19.0.6\"\n\tmeta_date=956.12.28\n\tmeta_player_name=\"梁克贞\"\n}",
+            "character={\n\tliving={\n\t\t1={\n\t\t\tfirst_name=\"大悟\"\n\t\t\tbirth=900.1.1\n\t\t\tfemale=yes\n\t\t\tfamily_data={\n\t\t\t\tchild={ 20423 90 }\n\t\t\t}\n\t\t}\n\t\t20423={\n\t\t\tfirst_name=\"克贞\"\n\t\t\tbirth=890.1.1\n\t\t\tdynasty_house=11527\n\t\t\tfamily_data={\n\t\t\t\tspouse=2\n\t\t\t\tchild={ 3 4 5 }\n\t\t\t\tformer_spouses={ 11 12 }\n\t\t\t}\n\t\t}\n\t}\n\tdead_unprunable={\n\t\t2={\n\t\t\tfirst_name=\"埃尔薇拉\"\n\t\t\tbirth=1.6.2\n\t\t\tdeath=31.8.26\n\t\t\tdead_data={\n\t\t\t\tdate=31.8.26\n\t\t\t\treason=\"death_disease\"\n\t\t\t\tkiller=20423\n\t\t\t\tliege=7\n\t\t\t}\n\t\t}\n\t}\n}"
+        )
+    }
+
+    #[test]
+    fn save_kind_detects_header_kind() {
+        assert_eq!(save_kind(b"SAV0101abcdefgh0000000c\n").unwrap(), 1);
+        assert_eq!(save_kind(b"SAV0100abcdefgh0000000c\n").unwrap(), 0);
+        assert_eq!(save_kind(b"SAV0102abcdefgh0000a324\n").unwrap(), 2);
+        assert_eq!(save_kind(b"SAV0103abcdefgh0000a324\n").unwrap(), 3);
+        assert!(save_kind(b"SAV").is_err());
+    }
+
+    #[test]
+    fn melt_save_kind0_text_passes_through() {
+        // kind 0（Text）：完全明文，无需解压。
+        let text = sample_gamestate_text();
+        let mut save = text_header(0, 0);
+        save.extend_from_slice(text.as_bytes());
+        let save_as_text = String::from_utf8_lossy(&save).to_string();
+        let (melted, unknown) = melt_save(&save).expect("kind0 明文应直接通过");
+        assert_eq!(unknown, 0);
+        // 输出 = 头 + 完整明文（与 melt 产物结构一致）。
+        assert_eq!(String::from_utf8_lossy(&melted), save_as_text);
+    }
+
+    #[test]
+    fn melt_save_kind2_unified_text_inflates_gamestate() {
+        use std::io::Write;
+        // kind 2（UnifiedText）：明文 meta + raw-deflate 压缩的完整 gamestate。
+        let text = sample_gamestate_text();
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(text.as_bytes()).unwrap();
+        let compressed = enc.finish().unwrap();
+
+        let meta = "meta_data={\n\tsave_game_version=15\n\tversion=\"1.19.0.6\"\n}";
+        let mut save = text_header(2, meta.len() as u32);
+        save.extend_from_slice(meta.as_bytes());
+        save.extend_from_slice(b"\n");
+        save.extend_from_slice(b"gamestate");
+        save.extend_from_slice(&compressed);
+
+        let (melted, unknown) = melt_save(&save).expect("kind2 明文应解压成功");
+        assert_eq!(unknown, 0);
+        // 解压结果 = 头 + 完整 gamestate（meta 被解压块包含）。
+        let full = String::from_utf8_lossy(&melted);
+        assert!(full.contains("meta_player_name=\"梁克贞\""), "应含 meta：{full}");
+        assert!(full.contains("first_name=\"克贞\""), "应含人物：{full}");
+        assert!(full.contains("dynasty_house=11527"));
+    }
+
+    #[test]
+    fn cmd_prepare_on_plain_text_save_builds_cache() {
+        use std::io::Write;
+        // 端到端：明文（kind 2）走 cmd_prepare 全流程，缓存产物可被 meta/characters 读取。
+        let text = sample_gamestate_text();
+        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(text.as_bytes()).unwrap();
+        let compressed = enc.finish().unwrap();
+        let meta = "meta_data={\n\tsave_game_version=15\n\tversion=\"1.19.0.6\"\n}";
+        let mut save = text_header(2, meta.len() as u32);
+        save.extend_from_slice(meta.as_bytes());
+        save.extend_from_slice(b"\ngamestate");
+        save.extend_from_slice(&compressed);
+
+        let tmp = std::env::temp_dir().join(format!("ck3r_plain_{}", std::process::id()));
+        let save_path = tmp.join("plain.ck3");
+        let cache_dir = tmp.join("cache");
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(&save_path, &save).unwrap();
+        cmd_prepare(&save_path, &cache_dir, false).expect("prepare 明文存档应成功");
+
+        // meta.json：encoding 为 Text，player 名可读，字符计数正确（2 活 + 1 死）。
+        let meta_json: serde_json::Value = {
+            let raw = fs::read_to_string(cache_dir.join("meta.json")).unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        assert_eq!(meta_json["character_count"], 3);
+        assert_eq!(meta_json["dead_character_count"], 1);
+        assert_eq!(meta_json["player_name"], "梁克贞");
+        assert_eq!(meta_json["encoding"], "Text");
+        assert_eq!(meta_json["unknown_token_count"], 0);
+
+        // characters.ndjson：含 3 人，姓名字段可读；dead_data 的 liege 被扫出。
+        let ndjson = fs::read_to_string(cache_dir.join("characters.ndjson")).unwrap();
+        let lines: Vec<&str> = ndjson.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(ndjson.contains("克贞"), "人物名应可读：{ndjson}");
+        let dead_line = lines.iter().find(|l| l.contains("\"id\":\"2\"")).expect("含死者记录");
+        assert!(
+            dead_line.contains("\"liege\":\"7\""),
+            "dead_data.liege 应被扫出：{dead_line}"
+        );
+        // 2C.1 修复：family_data 内单行花括号列表（child={ 3 4 5 }）必须被收集。
+        let live_line = lines
+            .iter()
+            .find(|l| l.contains("\"id\":\"20423\""))
+            .expect("含玩家记录");
+        assert!(
+            live_line.contains("\"children\":[\"3\",\"4\",\"5\"]"),
+            "family_data 单行 child 列表应被收集：{live_line}"
+        );
+        assert!(
+            live_line.contains("\"former_spouses\":[\"11\",\"12\"]"),
+            "单行 former_spouses 应被收集：{live_line}"
+        );
+        assert!(
+            live_line.contains("\"spouses\":[\"2\"]"),
+            "单行 spouse 应被收集：{live_line}"
+        );
+        // 父系反推：角色 1（大悟，female=yes）的 child 列表含 20423 → 20423.mother=1。
+        let grand_line = lines
+            .iter()
+            .find(|l| l.contains("\"id\":\"1\""))
+            .expect("含大悟记录");
+        assert!(
+            grand_line.contains("\"children\":[\"20423\",\"90\"]"),
+            "角色1 的 child 列表应被收集：{grand_line}"
+        );
+        assert!(
+            live_line.contains("\"mother\":\"1\""),
+            "由 child 反推 mother：{live_line}"
+        );
+        fs::remove_dir_all(&tmp).ok();
     }
 }

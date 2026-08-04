@@ -473,3 +473,64 @@ def test_index_two_saves_same_character_id_isolated():
     assert idx_b.primary_bits("1").primary.id == "d_b"
     assert [p.titleId for p in idx_a.periods("1")] == ["d_a"]
     assert [p.titleId for p in idx_b.periods("1")] == ["d_b"]
+
+
+def test_build_title_events_aggregates_same_day_multi_title_gain():
+    """M3 收口（2C.1）：同一天获得多个头衔 → 聚合为一条事件。
+
+    一次战争/继承往往同日获多地；逐条刷屏会淹没叙事。聚合事件保留
+    全部 relatedTitles 与 evidence，但不写战争原因（无关联字段），
+    也不设 mergedCount（那是"重复记录去重"语义）。
+    """
+    from app.services.title_reign_extractor import TitleProfileIndex, build_title_events
+
+    raw = {
+        "titles": [
+            {
+                "key": "c_jia",
+                "name": "甲伯爵领",
+                "name_source": "save",
+                "tier": "county",
+                "holder_id": "1",
+                "history": [
+                    {"date": "950.8.16", "holder_id": "9", "kind": "holder"},
+                    {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
+                ],
+            },
+            {
+                "key": "c_yi",
+                "name": "乙伯爵领",
+                "name_source": "save",
+                "tier": "county",
+                "holder_id": "1",
+                "history": [
+                    {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
+                ],
+            },
+            {
+                "key": "d_bing",
+                "name": "丙公爵领",
+                "name_source": "save",
+                "tier": "duchy",
+                "holder_id": "1",
+                "history": [
+                    {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
+                ],
+            },
+        ],
+        "warnings": [],
+    }
+    idx = TitleProfileIndex(raw)
+    events = build_title_events("1", "梁克贞", idx.periods("1"), None)
+
+    gain = [e for e in events if e.type.value == "title_gain"]
+    # 三个头衔同日获得 → 聚合为一条
+    assert len(gain) == 1
+    e = gain[0]
+    assert e.date == "952.8.16"
+    assert e.id == "1-title-gain-952.8.16"
+    assert e.mergedCount is None  # 不污染"重复记录去重"语义
+    assert [t.id for t in e.relatedTitles] == ["c_jia", "c_yi", "d_bing"]
+    assert "甲伯爵领" in e.description and "乙伯爵领" in e.description and "丙公爵领" in e.description
+    assert "战争" not in e.description  # 不编造战争原因
+    assert len(e.evidence) == 3  # 组内全部证据可追溯

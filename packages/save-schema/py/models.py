@@ -330,6 +330,8 @@ class EvidenceWarning(BaseModel):
 class CharacterProfile(BaseModel):
     id: str
     name: str
+    # 2C.1：绰号（如 nick_the_peaceful→「仁」）。未解析时如实为空。
+    nickname: Optional[EntityRef] = None
     sex: Optional[Sex] = None
     birthDate: Optional[str] = None
     deathDate: Optional[str] = None
@@ -349,6 +351,10 @@ class CharacterProfile(BaseModel):
     spouses: List[RelationshipPeriod] = Field(default_factory=list)
     children: List[CharacterRef] = Field(default_factory=list)
     siblings: List[CharacterRef] = Field(default_factory=list)
+    # 2C.1：君主（仅 dead_data 子块实测存在，卒年记录其君主）；无则 None。
+    liege: Optional[CharacterRef] = None
+    # 2C.1：血缘远近 + 姻亲（祖辈/叔伯姑舅/堂表亲/侄甥/姻亲），均推断并如实标注。
+    relatives: List[CharacterRef] = Field(default_factory=list)
 
     friends: List[CharacterRef] = Field(default_factory=list)
     rivals: List[CharacterRef] = Field(default_factory=list)
@@ -371,6 +377,8 @@ class CharacterSummary(BaseModel):
     """
     id: str
     name: str
+    # 2C.1：绰号（如 nick_the_peaceful→「仁」）。未解析时如实为空。
+    nickname: Optional[EntityRef] = None
     sex: Optional[Sex] = None
     birthDate: Optional[str] = None
     deathDate: Optional[str] = None

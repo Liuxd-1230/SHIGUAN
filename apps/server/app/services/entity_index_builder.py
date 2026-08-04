@@ -28,6 +28,35 @@ from app.services.game_def_loader import GameDefLoader
 from app.services.localization import LocalizationLoader
 
 
+def _resolve_by_key(
+    kind: str,
+    key: str,
+    key_kind: Optional[str],
+    game_def: Optional[GameDefLoader],
+    loc: Optional[LocalizationLoader],
+    literal_keys: bool,
+) -> Optional[tuple[str, EntityNameSource, bool]]:
+    """按内部键解析可读名；解析不到返回 None（调用方自行回退到 save_name / 原始 id）。"""
+    if key_kind == "def":
+        name_loc = game_def.lookup(kind, key) if game_def else None
+        if name_loc:
+            readable = loc.resolve(name_loc) if loc else None
+            if readable:
+                return readable, EntityNameSource.LOC, True
+            # 游戏定义给了 loc 键，但本地化未命中 → 退化为 loc 键，仍比 def 键好。
+            return name_loc, EntityNameSource.GAME_DEF, True
+        # 游戏定义缺失 → 无法命名
+        return None
+    # key_kind == "loc" 或缺省：直接查本地化
+    readable = loc.resolve(key) if loc else None
+    if readable:
+        return readable, EntityNameSource.LOC, True
+    if literal_keys:
+        # 明文存档：字段名本身即可读（无 token 表）。
+        return key, EntityNameSource.LITERAL, True
+    return None
+
+
 def _resolve_name(
     kind: str,
     eid: str,
@@ -39,32 +68,26 @@ def _resolve_name(
     literal_keys: bool,
 ) -> tuple[str, EntityNameSource, bool]:
     """返回 (name, name_source, resolved)。"""
-    # 1) 存档成品名（玩家自定义头衔/混合文化/战争名）：已是可读文本，免查 loc。
+    # 1) 文化/信仰：存档的 save_name 是内部英文键的回退（如 "han"），中文名需
+    #    经本地化查 key 才能拿到；key 能解析出可读名时优先于 save_name。
+    #    （融合/分化文化无 template key → 走第 2 步用 save_name 成品名。）
+    if kind in ("culture", "faith") and key:
+        by_key = _resolve_by_key(kind, key, key_kind, game_def, loc, literal_keys)
+        if by_key is not None:
+            return by_key
+
+    # 2) 存档成品名（玩家自定义头衔/游戏内新建家族/融合文化）：已是可读文本，免查 loc。
     if save_name:
         return save_name, EntityNameSource.SAVE, True
 
-    # 2) 有内部键
+    # 3) 有内部键
     if key:
-        if key_kind == "def":
-            name_loc = game_def.lookup(kind, key) if game_def else None
-            if name_loc:
-                readable = loc.resolve(name_loc) if loc else None
-                if readable:
-                    return readable, EntityNameSource.LOC, True
-                # 游戏定义给了 loc 键，但本地化未命中 → 退化为 loc 键，仍比 def 键好。
-                return name_loc, EntityNameSource.GAME_DEF, True
-            # 游戏定义缺失 → 无法命名
-            return key, EntityNameSource.UNRESOLVED, False
-        # key_kind == "loc" 或缺省：直接查本地化
-        readable = loc.resolve(key) if loc else None
-        if readable:
-            return readable, EntityNameSource.LOC, True
-        if literal_keys:
-            # 明文存档：字段名本身即可读（无 token 表）。
-            return key, EntityNameSource.LITERAL, True
+        by_key = _resolve_by_key(kind, key, key_kind, game_def, loc, literal_keys)
+        if by_key is not None:
+            return by_key
         return key, EntityNameSource.UNRESOLVED, False
 
-    # 3) 既无 key 也无 save_name → 退化为原始 id
+    # 4) 既无 key 也无 save_name → 退化为原始 id
     return eid, EntityNameSource.UNRESOLVED, False
 
 

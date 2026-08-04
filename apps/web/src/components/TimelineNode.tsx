@@ -76,6 +76,14 @@ export default function TimelineNode({
                 已合并 {event.mergedCount} 条记录
               </span>
             )}
+            {event.relatedTitles && event.relatedTitles.length > 1 && (
+              <span
+                title={event.relatedTitles.map((t) => t.name).join("、")}
+                className="rounded border border-jade-600/50 bg-jade-600/10 px-1.5 py-0.5 text-[10px] text-jade-800"
+              >
+                聚合 {event.relatedTitles.length} 个头衔
+              </span>
+            )}
             <EvidenceBadge value={event.confidence} showLabel={false} />
           </span>
         </div>

@@ -237,6 +237,7 @@ class SessionManager:
         ruler_ids: Optional[set[str]] = None,
         search_resolver: Optional[object] = None,
         title_holder_ids: Optional[set[str]] = None,
+        relevance: Optional[dict] = None,
     ) -> dict:
         """在内存索引上做筛选 + 分页（不重新 melt）。
 
@@ -248,8 +249,14 @@ class SessionManager:
         人物 id 集合）；未提供时恒为“全部通过”（兼容旧调用/占位 token 表）。
 
         ruler_ids：M3 由 landed_titles 反解出的“当前持有头衔”人物 id 集合。
-        提供时 ruler_only 用它判定（比仅看人物块 landed_data 更完整，含名义头衔）；
+        提供时 ruler_only 用它判定（比仅看人物块 ruler 字段更完整，含名义头衔）；
         未提供则退回旧行为（人物块 ruler 字段）。
+
+        relevance：Phase 2C 玩家/关联度优先排序。形如
+        `{"player": id|None, "rel1": set[id], "dynasty": id|None}`。
+        sort 为 None（默认）或 "relevance" 且 player 命中时，按
+        玩家(0) → 配偶/子女/父母/妾(1) → 同 house(2) → 统治者(3) → 其他(4) 排序；
+        未命中则退回原默认顺序。显式 name/birth/id 不受影响。
         """
         recs = sess.records
         needle = (q or "").strip().lower()
@@ -284,6 +291,30 @@ class SessionManager:
         elif sort == "id":
             out.sort(
                 key=lambda r: int(r["id"]) if str(r["id"]).isdigit() else 1 << 60
+            )
+        elif relevance and relevance.get("player"):
+            player = str(relevance["player"])
+            rel1 = relevance.get("rel1") or set()
+            dyn = relevance.get("dynasty")
+
+            def _rank(r):
+                cid = str(r.get("id"))
+                if cid == player:
+                    return 0
+                if cid in rel1:
+                    return 1
+                if dyn and str(r.get("dynasty")) == dyn:
+                    return 2
+                if ruler_ids is not None and cid in ruler_ids:
+                    return 3
+                return 4
+
+            out.sort(
+                key=lambda r: (
+                    _rank(r),
+                    (r.get("name") or "").lower(),
+                    int(r["id"]) if str(r["id"]).isdigit() else 1 << 60,
+                )
             )
         total = len(out)
         start = max(0, min(offset, total))

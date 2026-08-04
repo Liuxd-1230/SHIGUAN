@@ -244,50 +244,59 @@ def build_title_events(
             confidence=Confidence.CONFIRMED,
         )
 
+    # M3 收尾（2C.1）：同一日期的多头衔获得/失去聚合为一条事件。
+    # 一次战争/继承往往同日获得多个头衔，逐条刷屏会淹没叙事；聚合后
+    # relatedTitles 保留全部头衔、evidence 聚合组内全部记录（可追溯）。
+    # 不写战争原因（存档无 war→title 关联字段），也不设 mergedCount
+    # （该字段语义是"重复记录去重"，多头衔是不同事实，不污染）。
+    gains: dict[str, list[TitlePeriod]] = {}
+    losses: dict[str, list[TitlePeriod]] = {}
     for p in periods:
-        title_ref = _title_ref(p)
         if p.start:
-            events.append(
-                TimelineEvent(
-                    id=f"{cid}-title-gain-{p.titleId}-{p.start}",
-                    type=EventType.TITLE_GAIN,
-                    date=p.start,
-                    title="获得头衔",
-                    description=f"{character_name} 于 {p.start} 成为「{p.name}」的持有者。",
-                    relatedTitles=[title_ref],
-                    sourcePath=f"{p.sourcePath}/history/{p.start}",
-                    confidence=Confidence.CONFIRMED,
-                    evidence=[
-                        _gain_loss_evidence(
-                            p,
-                            p.start,
-                            f"history.{p.start}.holder",
-                            "landed_titles 历史记录中的持有者变更（该日起持有此头衔）",
-                        )
-                    ],
-                )
-            )
+            gains.setdefault(p.start, []).append(p)
         if p.end:
-            events.append(
-                TimelineEvent(
-                    id=f"{cid}-title-loss-{p.titleId}-{p.end}",
-                    type=EventType.TITLE_LOSS,
-                    date=p.end,
-                    title="失去头衔",
-                    description=f"{character_name} 于 {p.end} 不再是「{p.name}」的持有者。",
-                    relatedTitles=[title_ref],
-                    sourcePath=f"{p.sourcePath}/history/{p.end}",
-                    confidence=Confidence.CONFIRMED,
-                    evidence=[
-                        _gain_loss_evidence(
-                            p,
-                            p.end,
-                            f"history.{p.end}.holder",
-                            "landed_titles 历史记录中的持有者变更（该日止不再持有此头衔）",
-                        )
-                    ],
-                )
+            losses.setdefault(p.end, []).append(p)
+
+    def _titles_event(
+        date: str,
+        etype: EventType,
+        label: str,
+        group: list[TitlePeriod],
+        verb_desc: str,
+        start: bool,
+    ) -> TimelineEvent:
+        title_refs = [_title_ref(p) for p in group]
+        names = "、".join(p.name for p in group)
+        evidence = [
+            _gain_loss_evidence(
+                p,
+                date,
+                f"history.{date}.holder",
+                "landed_titles 历史记录中的持有者变更"
+                + ("（该日起持有此头衔）" if start else "（该日止不再持有此头衔）"),
             )
+            for p in group
+        ]
+        return TimelineEvent(
+            id=f"{cid}-{('title-gain' if start else 'title-loss')}-{date}",
+            type=etype,
+            date=date,
+            title=label,
+            description=f"{character_name} 于 {date} {verb_desc}：{names}。",
+            relatedTitles=title_refs,
+            sourcePath=f"{group[0].sourcePath}/history/{date}",
+            confidence=Confidence.CONFIRMED,
+            evidence=evidence,
+        )
+
+    for date, group in gains.items():
+        events.append(
+            _titles_event(date, EventType.TITLE_GAIN, "获得头衔", group, "成为以下头衔的持有者", True)
+        )
+    for date, group in losses.items():
+        events.append(
+            _titles_event(date, EventType.TITLE_LOSS, "失去头衔", group, "不再是以下头衔的持有者", False)
+        )
 
     # 继位：仅当前主头衔的明确任期起点（历史记录的直接 holder 变更，非推断 primary）。
     if primary_period is not None and primary_period.isCurrent and primary_period.start:

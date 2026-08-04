@@ -58,6 +58,8 @@ from app.config import (
 )
 from app.services.character_extractor import to_profile, to_summary
 from app.services.character_extractor import _build_timeline_and_evidence
+from app.services.character_extractor import _dynasty_entity
+from app.services.character_extractor import _entity
 from app.services.character_extractor import resolve_display_name
 from app.services.directory_watcher import DirectoryWatcher
 from app.services.game_data_resolver import GameDataResolver
@@ -94,6 +96,12 @@ _title_index_cache: dict[tuple[str, str], tuple[TitleProfileIndex, list[str]]] =
 # M4：记忆索引缓存（一次反解 memories.json，档案页/memories 端点复用）。
 # 值：(MemoryTimelineIndex, scanner_warnings)。
 _memory_index_cache: dict[tuple[str, str], tuple[MemoryTimelineIndex, list[str]]] = {}
+# 实体索引缓存（entities.json → ReferenceResolver）：王朝/文化/信仰数字 id → 可读名。
+# 依赖同一 loader（house 名 = 显示姓），随 saveId 失效由 _drop_entity_resolver 清理。
+_entity_resolver_cache: dict[tuple[str, str], ReferenceResolver] = {}
+# 玩家/关联度排序缓存（meta.player_name 反推玩家 + 直系/同族/统治者 rank）。
+# 值：{"player": id|None, "rel1": set[str], "dynasty": str|None}，随 saveId 失效清理。
+_relevance_cache: dict[tuple[str, str], dict] = {}
 
 
 # -- 统一错误结构 -------------------------------------------------------------
@@ -174,6 +182,8 @@ def _on_watch_change(added, removed, changed) -> None:
                 _session_manager.drop_save(save_id)
                 _drop_title_index(save_id)
                 _drop_memory_index(save_id)
+                _drop_entity_resolver(save_id)
+                _drop_relevance(save_id)
                 _drop_search_name_cache(save_id)
             except Exception:  # noqa: BLE001
                 pass
@@ -207,13 +217,127 @@ def _title_index(sess, save_id: str) -> tuple[TitleProfileIndex, list[str]]:
     descriptors = _descriptors_from_meta(meta)
     report = _mod_resolver().resolve(descriptors, game_version)
     loader = _build_localization(save_id, sess.signature, report.required)
-    entity_raw = _session_manager.adapter.entities(sess.cache_dir)
-    entity_index = EntityIndexBuilder(game_def=None, loc=loader).build(entity_raw)
-    reference = ReferenceResolver(entity_index)
+    reference = _entity_resolver(sess, save_id, loader)
     index = TitleProfileIndex(raw, loc=loader, resolver=reference)
     scanner_warnings = list(raw.get("warnings") or [])
     _title_index_cache[key] = (index, scanner_warnings)
     return index, scanner_warnings
+
+
+def _entity_resolver(sess, save_id: str, loader: LocalizationLoader) -> ReferenceResolver:
+    """构建（或复用）该存档的实体引用解析器：entities.json → 数字 id → 可读名。
+
+    解析范围含 dynasty/house/culture/faith/title（house 名即显示姓）。
+    一次反解 entities.json 后按 (save_id, signature) 缓存，列表页/档案页/头衔索引共享，
+    绝不重复扫描 entities.json。loader 缺失（本地化不可用）时仍可用 raw key 回退。
+    """
+    key = (save_id, sess.signature)
+    cached = _entity_resolver_cache.get(key)
+    if cached is not None:
+        return cached
+    entity_raw = _session_manager.adapter.entities(sess.cache_dir)
+    entity_index = EntityIndexBuilder(game_def=None, loc=loader).build(entity_raw)
+    reference = ReferenceResolver(entity_index)
+    _entity_resolver_cache[key] = reference
+    return reference
+
+
+def _drop_entity_resolver(save_id: str) -> None:
+    for k in list(_entity_resolver_cache.keys()):
+        if k[0] == save_id:
+            del _entity_resolver_cache[k]
+
+
+def _drop_relevance(save_id: str) -> None:
+    for k in list(_relevance_cache.keys()):
+        if k[0] == save_id:
+            del _relevance_cache[k]
+
+
+def _player_full_name(sess) -> Optional[str]:
+    """由 meta.player_name 提取玩家姓名主体。
+
+    CK3 的 player_name 形如「安南王，梁克贞」（头衔前缀 + 姓名，逗号分隔），
+    排序只比较姓名主体 → 取「，」后片段。
+    """
+    raw = (_session_manager.meta(sess).get("player_name") or "").strip()
+    if not raw:
+        return None
+    if "，" in raw:
+        return raw.rsplit("，", 1)[1].strip()
+    return raw
+
+
+def _detect_player(sess, loader, resolver, player_full: str) -> Optional[str]:
+    """在人物索引中按「姓+名」反推玩家 id（玩家必为存活统治者）。
+
+    姓取 house 解析（dynn_liang205→梁），名为本地化解码；二者拼接 == player_full
+    即命中。优先返回首个存活统治者命中（玩家特性），否则返回任意首个命中。
+    resolver 缺失（实体索引不可用）时无法解析姓 → 返回 None（不伪造）。
+    """
+    if resolver is None:
+        return None
+    best = None
+    for r in sess.records:
+        if not r.get("dynasty") or not r.get("name"):
+            continue
+        house = _dynasty_entity(r.get("dynasty"), loader, resolver)
+        if house is None or not house.resolved:
+            continue
+        given = resolve_display_name(str(r.get("name")), loader)
+        if not given:
+            continue
+        if (house.name or "") + given != player_full:
+            continue
+        if bool(r.get("alive")) and bool(r.get("ruler")):
+            return str(r.get("id"))
+        if best is None:
+            best = str(r.get("id"))
+    return best
+
+
+def _relevance_ranks(sess, save_id: str, loader, resolver) -> dict:
+    """构建（或复用）该存档的玩家/关联度排序信息。
+
+    返回 {"player": id|None, "rel1": set[str], "dynasty": str|None}：
+    player 玩家 id；rel1 直系亲属（配偶/子女/父母/妾）id 集合；
+    dynasty 玩家 house id（同族 rank 2 判定）。一次反推后按 (save_id, signature)
+    缓存，列表页复用，绝不重复扫描人物索引。玩家未检出 → player=None（退回默认顺序）。
+    """
+    key = (save_id, sess.signature)
+    cached = _relevance_cache.get(key)
+    if cached is not None:
+        return cached
+    info: dict = {"player": None, "rel1": set(), "dynasty": None}
+    player_full = _player_full_name(sess)
+    if player_full and loader is not None:
+        pid = _detect_player(sess, loader, resolver, player_full)
+        if pid is not None:
+            stub = sess.by_id.get(pid) or {}
+            info["player"] = pid
+            rel1: set[str] = set()
+            for k in (
+                "spouses",
+                "former_spouses",
+                "children",
+                "concubines",
+                "former_concubines",
+                "concubinists",
+                "former_concubinists",
+            ):
+                v = stub.get(k)
+                if isinstance(v, list):
+                    rel1.update(str(x) for x in v if x is not None)
+            for k in ("father", "mother", "real_father", "primary_spouse"):
+                v = stub.get(k)
+                if v is not None:
+                    rel1.add(str(v))
+            info["rel1"] = rel1
+            dyn = stub.get("dynasty")
+            if dyn is not None:
+                info["dynasty"] = str(dyn)
+    _relevance_cache[key] = info
+    return info
 
 
 def _drop_title_index(save_id: str) -> None:
@@ -281,10 +405,15 @@ def _ensure_loader(sess, save_id: str) -> LocalizationLoader:
 def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
     """组装单人物档案的 M3 头衔位 + M4 记忆位（供 profile / timeline 端点共用）。
 
-    返回 (loader, title_periods, title_events, title_warnings, memory_index)。
+    返回 (loader, title_periods, title_events, title_warnings, memory_index, resolver)。
     索引与 loader 均按 (save_id, signature) 缓存复用，不重复扫描、不重新 melt。
     """
     loader = _ensure_loader(sess, save_id)
+    resolver = None
+    try:
+        resolver = _entity_resolver(sess, save_id, loader)
+    except (ReaderExecutionError, ReaderMissingError):
+        resolver = None
     title_periods: list = []
     title_events: list = []
     title_warnings: list = []
@@ -296,7 +425,9 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
         title_periods = title_index.periods(character_id)
         bits = title_index.primary_bits(character_id)
         name_key = stub.get("name") or ""
-        display_name = loader.resolve(name_key) if (loader and name_key) else name_key
+        # 与 to_profile 的姓名解析一致（本地化 → 拼音hex 解码 → 原 key），
+        # 避免拼音hex 名未命中本地化时 loader.resolve 返回 None，污染头衔描述。
+        display_name = resolve_display_name(name_key, loader) if name_key else name_key
         primary_period = None
         if bits.primary is not None:
             primary_period = next(
@@ -316,13 +447,15 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
         memory_index, _ = _memory_index(sess, save_id)
     except (ReaderExecutionError, ReaderMissingError):
         memory_index = None
-    return loader, title_periods, title_events, title_warnings, memory_index
+    return loader, title_periods, title_events, title_warnings, memory_index, resolver
 
 
 def _ensure_session(save_id: str):
     """确保存档已稳定复制并准备好 ParseSession（一次 melt，多次查询）。
 
     返回 (SaveRecord, ParseSession)。文件仍写入 → 409；未知 saveId → 404。
+    读取器执行失败（格式不支持 / melt 失败 / 二进制缺失）→ 统一 500 错误体，
+    避免未捕获异常逃逸成无 CORS 头的纯文本 500（浏览器会显示 "Failed to fetch"）。
     """
     rec = _registry.get(save_id)
     if rec is None:
@@ -334,7 +467,10 @@ def _ensure_session(save_id: str):
     sig = rec.staged_signature
     sess = _session_manager.get(save_id, sig)
     if sess is None:
-        sess = _session_manager.prepare(save_id, sig, rec.staging_path)  # type: ignore[arg-type]
+        try:
+            sess = _session_manager.prepare(save_id, sig, rec.staging_path)  # type: ignore[arg-type]
+        except (ReaderExecutionError, ReaderMissingError) as exc:
+            raise _fail(500, "reader_error", str(exc)) from exc
         _registry.set_parse_status(save_id, "parsed")
     return rec, sess
 
@@ -439,11 +575,15 @@ async def import_local_save(file: UploadFile = File(...)):
                     break
                 if not header_checked:
                     if not (
-                        chunk[:7] == b"SAV0101"
+                        chunk[:7] in (b"SAV0101", b"SAV0102", b"SAV0103")
                         or chunk[:4] == b"PK\x03\x04"
                         or b"PK\x05\x06" in chunk[:65536]
                     ):
-                        raise _fail(400, "bad_header", "文件头不是合法的 CK3 存档（需 SAV0101 或 zip 容器）。")
+                        raise _fail(
+                            400,
+                            "bad_header",
+                            "文件头不是合法的 CK3 存档（需 SAV0101/SAV0102/SAV0103 或 zip 容器）。",
+                        )
                     header_checked = True
                 written += len(chunk)
                 if written > MAX_UPLOAD_BYTES:
@@ -766,11 +906,12 @@ def save_meta_endpoint(save_id: str):
 _search_name_cache: dict[tuple, str] = {}
 
 
-def _search_text_resolver(sess, save_id: str, title_index, loader):
+def _search_text_resolver(sess, save_id: str, title_index, loader, resolver=None):
     """构造 `(stub) -> str` 搜索文本解析器（解析后名字 + 头衔名 + 关键字段）。
 
     搜索范围：解析后的中文人名（loc key / 拉丁音译 / 拼音hex 解码）+ 原始名字键
-    （便于按拼音搜索）+ 头衔名（current/历史）+ 王朝/文化/信仰 id（数字可搜）。
+    （便于按拼音搜索）+ 头衔名（current/历史）+ 王朝/文化/信仰的**解析后中文名**
+    （如「汉」「景教」）及原始 id（数字可搜）。
     """
 
     def _name(nk: str) -> str:
@@ -784,12 +925,17 @@ def _search_text_resolver(sess, save_id: str, title_index, loader):
         _search_name_cache[key] = resolved
         return resolved
 
-    def resolver(stub: dict) -> str:
+    def _search_text(stub: dict) -> str:
         parts: list[str] = []
         nk = str(stub.get("name") or "")
         if nk:
             parts.append(_name(nk))
             parts.append(nk)  # 原始键（拼音）也可搜索
+        # 2C.1：绰号解析名进搜索（nick_the_peaceful → 「仁」）。
+        nknick = stub.get("nickname")
+        if nknick:
+            parts.append(_name(nknick))
+            parts.append(str(nknick))
         cid = str(stub.get("id"))
         if title_index is not None:
             for p in title_index.periods(cid):
@@ -799,11 +945,20 @@ def _search_text_resolver(sess, save_id: str, title_index, loader):
                     parts.append(p.titleId)
         for field in ("dynasty", "culture", "faith", "house"):
             v = stub.get(field)
-            if v is not None:
-                parts.append(str(v))
+            if v is None:
+                continue
+            parts.append(str(v))
+            if resolver is not None:
+                ent = (
+                    _dynasty_entity(v, loader, resolver)
+                    if field == "dynasty"
+                    else _entity(v, field, loader, resolver)
+                )
+                if ent is not None and ent.name:
+                    parts.append(ent.name)
         return " ".join(parts)
 
-    return resolver
+    return _search_text
 
 
 @router.get("/saves/{save_id}/characters")
@@ -816,7 +971,7 @@ def list_characters_endpoint(
     aliveOnly: bool = False,
     dynasty: Optional[str] = None,
     title: Optional[str] = None,
-    sort: Optional[str] = Query(None, pattern="^(name|birth|id)$"),
+    sort: Optional[str] = Query(None, pattern="^(name|birth|id|relevance)$"),
 ):
     _rec, sess = _ensure_session(save_id)
     try:
@@ -824,11 +979,15 @@ def list_characters_endpoint(
     except (ReaderExecutionError, ReaderMissingError):
         title_index = None
     loader = _ensure_loader(sess, save_id)
+    try:
+        resolver = _entity_resolver(sess, save_id, loader)
+    except (ReaderExecutionError, ReaderMissingError):
+        resolver = None
     search_resolver = None
     title_holder_ids = None
     if q or title:
         if q:
-            search_resolver = _search_text_resolver(sess, save_id, title_index, loader)
+            search_resolver = _search_text_resolver(sess, save_id, title_index, loader, resolver)
         if title and title_index is not None:
             title_holder_ids = title_index.holder_ids_for_title(title)
     page = _session_manager.list_characters(
@@ -844,12 +1003,14 @@ def list_characters_endpoint(
         ruler_ids=title_index.ruler_ids() if title_index is not None else None,
         search_resolver=search_resolver,
         title_holder_ids=title_holder_ids,
+        relevance=_relevance_ranks(sess, save_id, loader, resolver),
     )
     items = [
         to_summary(
             it,
             loader,
             title_index.primary_bits(str(it.get("id"))) if title_index is not None else None,
+            resolver=resolver,
         ).model_dump()
         for it in page["items"]
     ]
@@ -872,7 +1033,7 @@ def character_profile_endpoint(save_id: str, character_id: str):
         raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
-    loader, title_periods, title_events, title_warnings, memory_index = _profile_parts(
+    loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
         sess, save_id, character_id, stub
     )
     return to_profile(
@@ -883,6 +1044,7 @@ def character_profile_endpoint(save_id: str, character_id: str):
         title_warnings=title_warnings,
         by_id=sess.by_id,
         memory_index=memory_index,
+        resolver=resolver,
     ).model_dump()
 
 
@@ -901,7 +1063,7 @@ def character_timeline_endpoint(save_id: str, character_id: str):
         raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
-    loader, _title_periods, title_events, _title_warnings, memory_index = _profile_parts(
+    loader, _title_periods, title_events, _title_warnings, memory_index, _resolver = _profile_parts(
         sess, save_id, character_id, stub
     )
     name_key = stub.get("name") or ""
@@ -996,7 +1158,7 @@ def generate_outline_endpoint(save_id: str, character_id: str, req: OutlineReque
     except ValueError:
         raise _fail(400, "invalid_style", f"非法 BiographyStyle：{req.style}")
 
-    loader, title_periods, title_events, title_warnings, memory_index = _profile_parts(
+    loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
         sess, save_id, character_id, stub
     )
     profile = to_profile(
@@ -1007,6 +1169,7 @@ def generate_outline_endpoint(save_id: str, character_id: str, req: OutlineReque
         title_warnings=title_warnings,
         by_id=sess.by_id,
         memory_index=memory_index,
+        resolver=resolver,
     )
 
     provider = _current_provider()

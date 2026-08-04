@@ -5,6 +5,7 @@ import { useRoute, navigate, ROUTES } from "../lib/router";
 import { setActiveSaveId } from "../lib/realRepository";
 import { buildDraft, eventChapterMap } from "../lib/buildOutline";
 import { titleTierLabel } from "../lib/labels";
+import { displayName } from "../lib/characterName";
 import type { TitlePeriod } from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
@@ -242,14 +243,21 @@ export default function BiographyPage() {
       <MuseumSurface variant="raised" className="p-5 sm:p-6">
         <div className="flex items-start gap-4">
           <PortraitFrame
-            name={profile.name}
+            name={displayName(profile.name, profile.dynasty)}
             cultureLabel={profile.culture?.name}
             size={84}
           />
           <div className="min-w-0">
             <h1 className="font-serif text-3xl font-bold text-ink-950">
-              {profile.name}
+              {displayName(profile.name, profile.dynasty)}
             </h1>
+            {profile.nickname && (
+              <p className="mt-0.5 text-sm text-gold-700">
+                号「{profile.nickname.name}
+                {profile.nickname.resolved === false && "（未解析）"}
+                」
+              </p>
+            )}
             <p className="mt-1 text-ink-600">
               {summary?.primaryTitle?.name ?? "无头衔"}
               {summary?.dynasty && <span> · {summary.dynasty.name}</span>}

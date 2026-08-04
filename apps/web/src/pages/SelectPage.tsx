@@ -106,7 +106,7 @@ function RealCharacterBrowser({ saveId }: { saveId: string }) {
         <input
           value={inputValue}
           onChange={(e) => onSearchChange(e.target.value)}
-          placeholder="搜索姓名 / 头衔 / 王朝"
+          placeholder="搜索姓名 / 头衔 / 国家 / 王朝"
           aria-label="搜索人物"
           className="w-full rounded-lg border border-ink-400/50 bg-paper-50 px-3 py-2 text-ink-900 placeholder:text-ink-400 focus:border-cinnabar-700 focus:outline-none sm:max-w-sm"
         />
@@ -234,7 +234,7 @@ function MockSelectPage() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="搜索姓名 / 头衔 / 王朝"
+          placeholder="搜索姓名 / 头衔 / 国家 / 王朝"
           aria-label="搜索人物"
           className="w-full rounded-lg border border-ink-400/50 bg-paper-50 px-3 py-2 text-ink-900 placeholder:text-ink-400 focus:border-cinnabar-700 focus:outline-none sm:max-w-sm"
         />

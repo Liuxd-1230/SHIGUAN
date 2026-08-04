@@ -34,6 +34,7 @@ from models import (
     WarningSeverity,
 )
 
+from app.services.entity_index_builder import ReferenceResolver
 from app.services.localization import LocalizationLoader
 from app.services.title_reign_extractor import TitleSummaryBits
 from app.services.timeline_builder import merge_timeline
@@ -188,14 +189,120 @@ def derive_siblings(
     return out
 
 
+def derive_extended_relations(
+    stub: dict,
+    by_id: Optional[dict] = None,
+    loader: Optional[LocalizationLoader] = None,
+) -> list[CharacterRef]:
+    """血缘远近 + 姻亲（2C.1，写史书所需的家族网补充）。
+
+    全部为**推断**（CK3 存档无直述远亲字段），sourcePath 如实标注关系类型
+    与推断来源，绝不伪造；查不到的 id 跳过。覆盖：
+      - 祖辈（父母之父母）；
+      - 叔伯姑舅（父母之兄弟姐妹）；
+      - 堂/表亲（父母之兄弟姐妹之子女）；
+      - 侄甥（兄弟姐妹之子女）；
+      - 姻亲（配偶的父母与兄弟姐妹）。
+    返回按 id 排序去重；不含父母/子女/兄弟姐妹（另有字段）。
+    """
+    cid = str(stub.get("id"))
+    if not by_id:
+        return []
+    me = by_id.get(cid) or stub
+    father = me.get("father")
+    mother = me.get("mother")
+    my_parents = {p for p in (father, mother) if p}
+    my_siblings = {o for o, r in by_id.items() if o != cid and (father and r.get("father") == father or mother and r.get("mother") == mother)}
+
+    # 父母索引：id -> (father, mother)
+    parent_of = {
+        str(o): {str(v) for k in ("father", "mother") if (v := r.get(k))}
+        for o, r in by_id.items()
+    }
+    # 祖辈 = 父母的父母
+    grandparents = set()
+    for p in my_parents:
+        grandparents |= parent_of.get(p, set())
+    grandparents -= {cid}
+    # 叔伯姑舅 = 祖辈之子女中，不属于我父母的人（即与父母同辈的兄弟姐妹）。
+    aunts_uncles = set()
+    for gp in grandparents:
+        for o, r in by_id.items():
+            if (gp in parent_of.get(o, set())) and o not in my_parents and o != cid:
+                aunts_uncles.add(o)
+    # 堂/表亲 = 叔伯姑舅之子女
+    cousins = set()
+    for a in aunts_uncles:
+        for o, r in by_id.items():
+            if (father and r.get("father") == a) or (mother and r.get("mother") == a):
+                if o != cid:
+                    cousins.add(o)
+    # 侄甥 = 兄弟姐妹之子女
+    nephews = set()
+    for s in my_siblings:
+        for o, r in by_id.items():
+            if (father and r.get("father") == s) or (mother and r.get("mother") == s):
+                if o != cid:
+                    nephews.add(o)
+    # 姻亲 = 配偶的父母与兄弟姐妹
+    in_laws = set()
+    for sp in me.get("spouses") or []:
+        sp = str(sp)
+        sp_stub = by_id.get(sp)
+        if not sp_stub:
+            continue
+        in_laws |= parent_of.get(sp, set())
+        sp_father = sp_stub.get("father")
+        sp_mother = sp_stub.get("mother")
+        for o, r in by_id.items():
+            if o == sp:
+                continue
+            if (sp_father and r.get("father") == sp_father) or (sp_mother and r.get("mother") == sp_mother):
+                in_laws.add(o)
+
+    kinds = {
+        "grandparent": sorted(grandparents),
+        "aunt_uncle": sorted(aunts_uncles),
+        "cousin": sorted(cousins),
+        "nephew": sorted(nephews),
+        "in_law": sorted(in_laws),
+    }
+    out: list[CharacterRef] = []
+    seen: set[str] = set()
+    for kind, ids in kinds.items():
+        for rid in ids:
+            if rid in seen or rid == cid or rid in my_parents or rid in my_siblings:
+                continue
+            if rid not in by_id:
+                continue
+            seen.add(rid)
+            out.append(
+                _character_ref_for(
+                    rid,
+                    f"character/{cid}/relatives/{rid}#inferred_from_{kind}",
+                    by_id,
+                    loader,
+                )
+            )
+    out.sort(key=lambda r: r.id)
+    return out
+
+
 def _entity(
-    ref_id, ref_type: str, loader: Optional[LocalizationLoader] = None
+    ref_id,
+    ref_type: str,
+    loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> Optional[EntityRef]:
     if not ref_id:
         return None
     sid = str(ref_id)
-    # 数字/token-id（如 "41"、"9067"、"t2ea6"）→ 无法本地化，保留 id 并标记未解析
-    if sid.isdigit() or (sid.startswith("t") and sid[1:].isdigit()):
+    is_numeric = sid.isdigit() or (sid.startswith("t") and sid[1:].isdigit())
+    # 数字/token-id → 实体索引解析（entities.json 的 id→内部键→本地化中文名）。
+    # 索引缺失该 id 时 resolver 返回 name=原 id + resolved=False（不伪造）。
+    if resolver is not None and is_numeric:
+        return resolver.resolve(ref_type, sid)
+    if is_numeric:
         return EntityRef(id=sid, name=sid, type=ref_type, resolved=False)
     # 字符串键（如 "asian_han_chinese"）→ 尝试本地化
     if loader is not None:
@@ -203,6 +310,92 @@ def _entity(
         if resolved:
             return EntityRef(id=sid, name=resolved, type=ref_type, resolved=True)
     return EntityRef(id=sid, name=sid, type=ref_type, resolved=False)
+
+
+def _dynasty_entity(
+    ref_id,
+    loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
+) -> Optional[EntityRef]:
+    """解析人物的姓（王朝/家族名）。
+
+    存档人物块的 dynasty 字段实为 dynasty_house 数字 id：优先按 house 解析
+    （如 dynn_liang205→梁，游戏 UI 显示的姓即家族名），未命中再回退 dynasty
+    kind；两者都未命中保留 house 结果（resolved=False，不伪造）。
+    """
+    if resolver is not None and ref_id:
+        sid = str(ref_id)
+        house = resolver.resolve("house", sid)
+        if house.resolved:
+            return house
+        dyn = resolver.resolve("dynasty", sid)
+        if dyn.resolved:
+            return dyn
+        return house
+    return _entity(ref_id, "dynasty", loader, resolver)
+
+
+def _resolved_entity_fields(
+    stub: dict,
+    loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
+) -> set:
+    """返回已成功解析为可读名的实体字段名集合（culture/faith/dynasty_house）。
+
+    M5.1 收尾：读取器的 evidence_warnings 在无实体索引时把数字 id 标记为
+    unresolved；实体索引接入后这些字段已被解析成中文名，对应的过时告警应被
+    过滤（未命中时仍原样保留，绝不伪造）。
+    """
+    resolved: set = set()
+    if resolver is not None:
+        for kind, field in (("culture", "culture"), ("faith", "faith")):
+            val = stub.get(field)
+            if not val:
+                continue
+            ref = resolver.resolve(kind, str(val))
+            if ref.resolved:
+                resolved.add(field)
+        # 姓：stub.dynasty 实为 house id，house 或 dynasty 任一经解析即视为已解析。
+        # 读取器 evidence_warnings 的字段名是 dynasty_house，故两种字段名都标记。
+        dyn = stub.get("dynasty")
+        if dyn:
+            house = resolver.resolve("house", str(dyn))
+            if house.resolved:
+                resolved.update(("dynasty", "dynasty_house"))
+            else:
+                dyn_ref = resolver.resolve("dynasty", str(dyn))
+                if dyn_ref.resolved:
+                    resolved.update(("dynasty", "dynasty_house"))
+    return resolved
+
+
+def _nickname_entity(
+    nk: Optional[str], loader: Optional[LocalizationLoader] = None
+) -> Optional[EntityRef]:
+    """解析人物绰号（2C.1）：nick_the_peaceful → 本地化「仁」。
+
+    本地化未命中则回退原 key + resolved=False（不伪造）；无绰号返回 None。
+    """
+    if not nk:
+        return None
+    name = resolve_display_name(nk, loader)
+    resolved = name != nk
+    return EntityRef(id=nk, name=name, type="nickname", resolved=resolved)
+
+
+def _liege_ref(
+    stub: dict, by_id=None, loader: Optional[LocalizationLoader] = None
+) -> Optional[CharacterRef]:
+    """君主（2C.1）：dead_data.liege，卒年记录其君主。名字经索引解析，未命中保留原 id。"""
+    liege = stub.get("liege")
+    if not liege:
+        return None
+    return _character_ref_for(
+        liege,
+        f"character/{stub.get('id')}/dead_data/liege",
+        by_id,
+        loader,
+    )
 
 
 def _sex_of(stub: dict) -> Optional[Sex]:
@@ -215,7 +408,7 @@ def _sex_of(stub: dict) -> Optional[Sex]:
 
 
 def _build_timeline_and_evidence(
-    stub: dict, name: str
+    stub: dict, name: str, resolved_fields: Optional[set] = None
 ) -> tuple[list[TimelineEvent], list[EvidenceWarning]]:
     cid = str(stub.get("id"))
     warnings: list[EvidenceWarning] = []
@@ -336,13 +529,17 @@ def _build_timeline_and_evidence(
             )
         )
 
-    # 值为数字 id、尚无实体索引可解析的字段：明确标记 unresolved，绝不伪造名称。
+    # 值为数字 id、实体索引未命中可读名的字段：明确标记 unresolved，绝不伪造名称。
+    # M5.1 收尾：culture/faith/dynasty 若已由实体索引成功解析（resolved_fields），
+    # 该 unresolved 告警即为过时信息，不再保留（避免"已显示中文名却仍报未解析"）。
     for raw in stub.get("evidence_warnings", []) or []:
         # 读取器输出形如 "faith:numeric_id"；兼容旧格式（纯字段名）。
         field_name, _, kind = str(raw).partition(":")
+        if resolved_fields and field_name in resolved_fields:
+            continue
         if kind == "numeric_id":
             message = (
-                f"字段 {field_name} 的值是数字 id，尚未建立实体索引，"
+                f"字段 {field_name} 的值是数字 id，实体索引中未命中可读名称，"
                 f"只能原样展示 id（不伪造名称）。"
             )
         else:
@@ -362,10 +559,19 @@ def to_summary(
     stub: dict,
     loader: Optional[LocalizationLoader] = None,
     title_bits: Optional[TitleSummaryBits] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> CharacterSummary:
     name_key = stub.get("name") or ""
     name = resolve_display_name(name_key, loader) if name_key else name_key
-    warn_count = len(stub.get("evidence_warnings", []) or [])
+    # M5.1 收尾：已由实体索引解析的字段不再计入 unresolved 告警（与 to_profile 一致）。
+    resolved_fields = _resolved_entity_fields(stub, loader, resolver)
+    warn_count = len(
+        [
+            raw
+            for raw in (stub.get("evidence_warnings", []) or [])
+            if str(raw).partition(":")[0] not in resolved_fields
+        ]
+    )
     is_ruler = bool(stub.get("ruler", False))
     if title_bits is not None:
         # M3：由 landed_titles 反解的头衔摘要。isRuler 以“存在当前头衔”为权威补充
@@ -375,12 +581,14 @@ def to_summary(
     return CharacterSummary(
         id=str(stub.get("id")),
         name=name or name_key,
+        nickname=_nickname_entity(stub.get("nickname"), loader),
         sex=_sex_of(stub),
         birthDate=stub.get("birth"),
         deathDate=None if stub.get("alive", True) else stub.get("death"),
-        culture=_entity(stub.get("culture"), "culture", loader),
-        faith=_entity(stub.get("faith"), "faith", loader),
-        dynasty=_entity(stub.get("dynasty"), "dynasty", loader),
+        culture=_entity(stub.get("culture"), "culture", loader, resolver),
+        faith=_entity(stub.get("faith"), "faith", loader, resolver),
+        # 姓：stub.dynasty 实为 house id，优先按 house 解析（梁克贞的「梁」）。
+        dynasty=_dynasty_entity(stub.get("dynasty"), loader, resolver),
         # M3：主头衔由 landed_titles 的 holder/history 反解（见 TitleProfileIndex）。
         primaryTitle=title_bits.primary if title_bits is not None else None,
         highestTitleTier=title_bits.highestTier if title_bits is not None else None,
@@ -411,6 +619,7 @@ def to_profile(
     title_warnings: Optional[list[EvidenceWarning]] = None,
     by_id: Optional[dict] = None,
     memory_index=None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> CharacterProfile:
     """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。
 
@@ -419,6 +628,7 @@ def to_profile(
     title_warnings 为头衔相关告警（冲突 / 多同级推断），合并进 evidenceWarnings。
     M4：by_id 为会话人物索引（名字解析 + 兄弟推导）；memory_index 为
     MemoryTimelineIndex（memories / friends / rivals / lovers / 记忆时间线事件）。
+    M5.1：resolver 为实体索引（dynasty/house/culture/faith 数字 id → 可读中文名）。
     """
     cid = str(stub.get("id"))
     name_key = stub.get("name") or ""
@@ -528,7 +738,9 @@ def to_profile(
             )
         )
 
-    events, warnings = _build_timeline_and_evidence(stub, name or name_key)
+    # M5.1 收尾：culture/faith/dynasty 若实体索引已解析成功，不保留过时 unresolved 告警。
+    resolved_fields = _resolved_entity_fields(stub, loader, resolver)
+    events, warnings = _build_timeline_and_evidence(stub, name or name_key, resolved_fields)
     timeline = list(events)
     if title_events:
         timeline.extend(title_events)
@@ -558,12 +770,13 @@ def to_profile(
     return CharacterProfile(
         id=cid,
         name=name or name_key,
+        nickname=_nickname_entity(stub.get("nickname"), loader),
         sex=_sex_of(stub),
         birthDate=stub.get("birth"),
         deathDate=None if alive else death,
-        dynasty=_entity(stub.get("dynasty"), "dynasty", loader),
-        culture=_entity(stub.get("culture"), "culture", loader),
-        faith=_entity(stub.get("faith"), "faith", loader),
+        dynasty=_dynasty_entity(stub.get("dynasty"), loader, resolver),
+        culture=_entity(stub.get("culture"), "culture", loader, resolver),
+        faith=_entity(stub.get("faith"), "faith", loader, resolver),
         traits=traits,
         titles=title_periods or [],  # M3：由 landed_titles 反解（见 TitleProfileIndex）
         residences=[],
@@ -572,6 +785,9 @@ def to_profile(
         spouses=spouses,
         children=children,
         siblings=derive_siblings(stub, by_id, loader),  # M4：共享父母推导（含推断标注）
+        # 2C.1：君主（dead_data.liege，卒年记录）；血缘远近 + 姻亲（推断标注）。
+        liege=_liege_ref(stub, by_id, loader),
+        relatives=derive_extended_relations(stub, by_id, loader),
         friends=friends,
         rivals=rivals,
         lovers=lovers,

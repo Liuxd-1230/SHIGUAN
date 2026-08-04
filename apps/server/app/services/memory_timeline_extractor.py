@@ -155,6 +155,18 @@ def _battle_event_kind(mt: str) -> Optional[tuple[EventType, str]]:
     return None
 
 
+def _war_timeline_kind(mt: str) -> Optional[tuple[EventType, str]]:
+    """时间线只写“主要战争”（2C.1）：battle_* 单场小战役不进时间线。
+
+    memories 列表仍保留 battle 条目（原始记录），但时间线/传记叙事聚焦
+    war_won / war_lost（胜负双方可指名）与 defensive / offensive_war
+    （只有对方，无胜负 → 如实写“卷入”，不编造输赢）。
+    """
+    if mt in ("war_won", "war_lost", "defensive_war", "offensive_war"):
+        return _battle_event_kind(mt)
+    return None
+
+
 class MemoryTimelineIndex:
     """从 memories.json 聚合记忆归属 / 时间线事件 / 关系列表（按需惰性计算）。"""
 
@@ -400,8 +412,9 @@ class MemoryTimelineIndex:
                         sourcePath=f"character_memory_manager/database/{m.get('id')}",
                     )
                 )
-                # 时间线事件：仅「有日期 + 事件型」条目。
-                tl = TIMELINE_MAPPING.get(mt) or _battle_event_kind(mt)
+                # 时间线事件：仅「有日期 + 事件型」条目；battle_* 单场小战役
+                # 不进时间线（见 _war_timeline_kind），只写主要战争的胜负/卷入。
+                tl = TIMELINE_MAPPING.get(mt) or _war_timeline_kind(mt)
                 if tl and date:
                     event_type, title = tl
                     timeline.append(

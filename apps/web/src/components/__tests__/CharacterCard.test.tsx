@@ -59,4 +59,43 @@ describe("CharacterCard（M3 主头衔展示）", () => {
     expect(screen.getByText("统治者")).toBeTruthy();
     expect(screen.getByText("已故")).toBeTruthy();
   });
+
+  it("王朝名已解析时姓+名拼接显示（梁克贞）", () => {
+    render(
+      <CharacterCard
+        summary={makeSummary({
+          name: "克贞",
+          dynasty: { id: "d1", name: "梁", type: "house", resolved: true },
+        })}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("梁克贞")).toBeTruthy();
+  });
+
+  it("王朝未解析时仅显示名（不伪造姓）", () => {
+    render(
+      <CharacterCard
+        summary={makeSummary({
+          name: "克贞",
+          dynasty: { id: "9067", name: "9067", type: "house", resolved: false },
+        })}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("克贞")).toBeTruthy();
+  });
+
+  it("王朝以本人命名时不重复拼接（阿卜杜勒‑阿齐姆）", () => {
+    render(
+      <CharacterCard
+        summary={makeSummary({
+          name: "阿卜杜勒‑阿齐姆",
+          dynasty: { id: "d1", name: "阿卜杜勒‑阿齐姆", type: "house", resolved: true },
+        })}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("阿卜杜勒‑阿齐姆")).toBeTruthy();
+  });
 });

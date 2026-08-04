@@ -117,6 +117,29 @@ describe("TimelineNode（键盘可达 / aria-current）", () => {
     expect(screen.queryByText(/已合并/)).not.toBeInTheDocument();
     expect(container.querySelectorAll("span").length).toBeGreaterThan(0);
   });
+
+  it("relatedTitles>1 时显示「聚合 N 个头衔」徽标（含头衔名 tooltip）", () => {
+    render(
+      <TimelineNode
+        event={{
+          ...ev,
+          relatedTitles: [
+            { id: "c_a", name: "甲伯爵领", type: "title", resolved: true },
+            { id: "c_b", name: "乙伯爵领", type: "title", resolved: true },
+          ],
+        }}
+        active={false}
+        onSelect={() => {}}
+        inChapter={false}
+      />,
+    );
+    expect(screen.getByText("聚合 2 个头衔")).toBeInTheDocument();
+  });
+
+  it("relatedTitles 缺省/单个时不显示聚合徽标", () => {
+    render(<TimelineNode event={ev} active={false} onSelect={() => {}} inChapter={false} />);
+    expect(screen.queryByText(/聚合/)).not.toBeInTheDocument();
+  });
 });
 
 describe("InkDivider（装饰分隔线）", () => {

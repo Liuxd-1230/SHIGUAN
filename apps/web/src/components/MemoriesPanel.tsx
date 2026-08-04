@@ -122,6 +122,8 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
   const hasAny =
     spouseGroups.length > 0 ||
     (profile.siblings?.length ?? 0) > 0 ||
+    (profile.relatives?.length ?? 0) > 0 ||
+    profile.liege != null ||
     (profile.friends?.length ?? 0) > 0 ||
     (profile.rivals?.length ?? 0) > 0 ||
     (profile.lovers?.length ?? 0) > 0 ||
@@ -147,6 +149,8 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
 
       {(spouseGroups.length > 0 ||
         (profile.siblings?.length ?? 0) > 0 ||
+        (profile.relatives?.length ?? 0) > 0 ||
+        profile.liege != null ||
         (profile.friends?.length ?? 0) > 0 ||
         (profile.rivals?.length ?? 0) > 0 ||
         (profile.lovers?.length ?? 0) > 0) && (
@@ -187,6 +191,18 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
             </div>
           )}
           <RelationGroup title="兄弟姐妹" items={profile.siblings ?? []} />
+          {profile.liege && (
+            <div>
+              <h3 className="text-xs font-semibold tracking-wide text-ink-500">
+                君主
+                <span className="ml-1.5 text-[10px] text-ink-400">(存于死亡记录)</span>
+              </h3>
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <RefChip key={`liege-${profile.liege.id}`} r={profile.liege} />
+              </div>
+            </div>
+          )}
+          <RelationGroup title="亲属与姻亲" items={profile.relatives ?? []} badge="推断" />
           <RelationGroup title="好友" items={profile.friends ?? []} badge="推断" />
           <RelationGroup title="宿敌" items={profile.rivals ?? []} badge="推断" />
           <RelationGroup title="恋人" items={profile.lovers ?? []} badge="推断" />
