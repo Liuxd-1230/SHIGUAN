@@ -28,6 +28,7 @@ from models import (  # noqa: E402
     BiographyOutline,
     BiographyStyle,
     CharacterIndexEntry,
+    CharacterRef,
     CharacterProfile,
     CharacterSummary,
     Confidence,
@@ -268,6 +269,27 @@ def test_timeline_event_merged_count_roundtrip():
         evidence=[],
     )
     assert ev3.mergedCount is None
+
+
+def test_character_ref_resolved_roundtrip():
+    """M5.1：CharacterRef.resolved（姓名是否解析为可读名）在序列化往返后保留；
+    缺省为 None（可选字段，向后兼容）。"""
+    ref = CharacterRef(
+        id="9536",
+        name="毛里齐奥",
+        sourcePath="character/1/spouse/9536",
+        resolved=True,
+    )
+    dumped = ref.model_dump(mode="json")
+    assert dumped["resolved"] is True
+    ref2 = CharacterRef.model_validate(dumped)
+    assert ref2.resolved is True
+
+    unresolved = CharacterRef(id="9536", name="9536", resolved=False)
+    assert unresolved.resolved is False
+
+    legacy = CharacterRef(id="9536", name="9536")
+    assert legacy.resolved is None
 
 
 # ---------------------------------------------------------------------------

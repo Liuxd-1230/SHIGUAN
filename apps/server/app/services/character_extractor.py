@@ -96,21 +96,66 @@ def _resolve_char_name(cid, by_id=None, loader: Optional[LocalizationLoader] = N
     loader（含游戏本地化表）把它解析成真实人名；loader 缺失时回退为键本身，
     无论如何都比裸数字 id 可读。
     M5：名字解析统一走 resolve_display_name（本地化 → 拼音hex 解码 → 原 key）。
+    M5.1：resolved 语义独立维护（见 _resolve_char_name_resolved）。
+    """
+    name, _ = _resolve_char_name_resolved(cid, by_id, loader)
+    return name
+
+
+def _resolve_char_name_resolved(
+    cid, by_id=None, loader: Optional[LocalizationLoader] = None
+) -> tuple[str, bool]:
+    """解析人物 id → (可读名, resolved)。
+
+    resolved=True 表示名字真正被「转换」过（本地化命中或拼音hex 解码成功），
+    是可读姓名；False 表示仅保留原始 id / 内部 key（未伪造）。判定与
+    `resolve_display_name` 一致：解析结果与原 key 不同即为成功转换。
     """
     stub = (by_id or {}).get(str(cid))
     if not stub:
-        return str(cid)
+        return str(cid), False
     nk = stub.get("name") or ""
     if not nk:
-        return str(cid)
-    return resolve_display_name(nk, loader)
+        return str(cid), False
+    name = resolve_display_name(nk, loader)
+    return name, name != nk
 
 
-def derive_siblings(stub: dict, by_id: Optional[dict] = None) -> list[CharacterRef]:
+def _character_ref_for(
+    cid, source_path: str, by_id=None, loader: Optional[LocalizationLoader] = None
+) -> CharacterRef:
+    """统一构建人物引用：by_id 人物索引 + loader 解析可读名，resolved 如实标注。
+
+    M5.1：父母 / 子女 / 兄弟姐妹 / 好友 / 宿敌 / 恋人等一律经此构建；
+    名字不可解析时 name=原始 id 且 resolved=False，绝不编造占位姓名。
+    """
+    cid_s = str(cid)
+    name, resolved = _resolve_char_name_resolved(cid, by_id, loader)
+    return CharacterRef(id=cid_s, name=name, sourcePath=source_path, resolved=resolved)
+
+
+def _dedupe_by_id(refs: list[CharacterRef]) -> list[CharacterRef]:
+    """按 id 去重并保持顺序（M5.1：父母/子女等列表不重复出现同一人物）。"""
+    seen: set[str] = set()
+    out: list[CharacterRef] = []
+    for r in refs:
+        if r.id in seen:
+            continue
+        seen.add(r.id)
+        out.append(r)
+    return out
+
+
+def derive_siblings(
+    stub: dict,
+    by_id: Optional[dict] = None,
+    loader: Optional[LocalizationLoader] = None,
+) -> list[CharacterRef]:
     """由共享父母推导兄弟姐妹（M4）。
 
     CK3 存档没有直述的 sibling 字段；兄弟姐妹 = 与该人物共享父亲或母亲的其他人物。
     人物不在索引中 → 跳过（不伪造）；推断结果由调用方按需标注。
+    M5.1：名字经 by_id + loader 解析（unresolved → 原 id + resolved=False）。
     """
     cid = str(stub.get("id"))
     if not by_id:
@@ -132,10 +177,11 @@ def derive_siblings(stub: dict, by_id: Optional[dict] = None) -> list[CharacterR
             continue
         seen.add(other_id)
         out.append(
-            CharacterRef(
-                id=other_id,
-                name=_resolve_char_name(other_id, by_id),
-                sourcePath=f"character/{cid}/siblings/{other_id}#inferred_from_shared_parent",
+            _character_ref_for(
+                other_id,
+                f"character/{cid}/siblings/{other_id}#inferred_from_shared_parent",
+                by_id,
+                loader,
             )
         )
     out.sort(key=lambda r: r.id)
@@ -166,11 +212,6 @@ def _sex_of(stub: dict) -> Optional[Sex]:
     if s == "female":
         return Sex.FEMALE
     return None
-
-
-def _entity_ref_for(rel_id: str, source_path: str, loader=None) -> CharacterRef:
-    # 我们只知关联人物的 id（文件名/存档键），不知道其显示名；如实以 id 作为 name。
-    return CharacterRef(id=str(rel_id), name=str(rel_id), sourcePath=source_path)
 
 
 def _build_timeline_and_evidence(
@@ -394,18 +435,26 @@ def to_profile(
     parents: list[CharacterRef] = []
     if stub.get("father"):
         parents.append(
-            _entity_ref_for(stub["father"], f"character/{cid}/father{suffix}")
+            _character_ref_for(
+                stub["father"], f"character/{cid}/father{suffix}", by_id, loader
+            )
         )
     if stub.get("mother"):
         parents.append(
-            _entity_ref_for(stub["mother"], f"character/{cid}/mother{suffix}")
+            _character_ref_for(
+                stub["mother"], f"character/{cid}/mother{suffix}", by_id, loader
+            )
         )
     if stub.get("real_father"):
         parents.append(
-            _entity_ref_for(
-                stub["real_father"], f"character/{cid}/family_data/real_father"
+            _character_ref_for(
+                stub["real_father"],
+                f"character/{cid}/family_data/real_father",
+                by_id,
+                loader,
             )
         )
+    parents = _dedupe_by_id(parents)
 
     # M4：婚姻历史语义化 —— spouse（现任）/ former_spouses（前任，isFormer）/
     # betrothed（婚约）/ concubine+concubinist（妾室，含前任 isFormer）。
@@ -463,7 +512,10 @@ def to_profile(
 
     children: list[CharacterRef] = []
     for c in stub.get("children", []) or []:
-        children.append(_entity_ref_for(c, f"character/{cid}/child/{c}"))
+        children.append(
+            _character_ref_for(c, f"character/{cid}/child/{c}", by_id, loader)
+        )
+    children = _dedupe_by_id(children)
 
     traits: list[TraitRecord] = []
     for t in stub.get("traits", []) or []:
@@ -519,7 +571,7 @@ def to_profile(
         parents=parents,
         spouses=spouses,
         children=children,
-        siblings=derive_siblings(stub, by_id),  # M4：共享父母推导（含推断标注）
+        siblings=derive_siblings(stub, by_id, loader),  # M4：共享父母推导（含推断标注）
         friends=friends,
         rivals=rivals,
         lovers=lovers,

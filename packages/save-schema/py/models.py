@@ -194,6 +194,10 @@ class CharacterRef(BaseModel):
     primaryTitle: Optional[EntityRef] = None
     # 该引用在存档中的来源路径（如 character/1/child/2），用于史料依据面板回溯。
     sourcePath: Optional[str] = None
+    # M5.1：姓名是否已解析为可读姓名（True=可从人物索引/本地化得到可读名；
+    # False/None=仅保留原始人物 id 或内部 key，不得当作真实姓名写入 LLM 摘要）。
+    # 与关系事实的 confidence 无关（父母可能由 child_backref 推断，但名字仍可解析）。
+    resolved: Optional[bool] = None
 
 
 class TraitRecord(BaseModel):

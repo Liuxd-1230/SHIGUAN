@@ -51,11 +51,11 @@ class FakeAdapter:
              "traits": ["genius"], "ruler": True, "evidence_warnings": ["faith", "dynasty", "primary_title"]},
             {"id": "2", "name": "Bob", "birth": "730.1.1", "death": "800.1.1", "alive": False,
              "sex": "male", "culture": "c2", "faith": "42", "dynasty": "9067",
-             "father": "1", "mother": None, "spouses": ["1"], "children": [],
+             "father": "1", "mother": None, "spouses": ["1"], "children": ["3"],
              "traits": [], "ruler": False, "evidence_warnings": ["faith", "dynasty", "primary_title"]},
             {"id": "3", "name": "Carol", "birth": "740.1.1", "death": None, "alive": True,
              "sex": None, "culture": "c3", "faith": "43", "dynasty": "9068",
-             "father": None, "mother": None, "spouses": [], "children": [],
+             "father": "2", "mother": None, "spouses": [], "children": [],
              "traits": ["brave"], "ruler": False, "evidence_warnings": ["faith", "dynasty", "primary_title"]},
         ]
         buf, offsets = [], {}
@@ -691,13 +691,17 @@ def _walk_strings(obj):
 
 # -- M5 时间线去重合并 / 解析后搜索 / loader 缺失重建 ---------------------------
 def test_timeline_endpoint_dedups_child_birth(client, tmp_path):
-    """M5：/timeline 端点对同 child+date 的双记忆记录（child_born+first_born）去重合并。"""
+    """M5：/timeline 端点对同 child+date 的双记忆记录（child_born+first_born）去重合并。
+
+    M5.1：合并要求「可靠实体锚点」——child_born 记忆归属到父母（Bob），
+    锚点为 child id=3，两条同日记录合并为一条。
+    """
     c, _a, reg, _s = client
     sid = _register(tmp_path, reg)
-    r = c.get(f"/api/local-saves/{sid}/characters/3/timeline")
+    r = c.get(f"/api/local-saves/{sid}/characters/2/timeline")
     assert r.status_code == 200
     body = r.json()
-    assert body["characterId"] == "3"
+    assert body["characterId"] == "2"
     # 两条 child_birth 记忆 → 合并为一条（mergedCount=2）。
     child_events = [e for e in body["timeline"] if e["type"] == "child_birth"]
     assert len(child_events) == 1, body["timeline"]
@@ -713,7 +717,7 @@ def test_profile_timeline_merged_child_birth(client, tmp_path):
     """M5：人物档案 timeline 同样走 merge（mergedCount=2，证据聚合）。"""
     c, _a, reg, _s = client
     sid = _register(tmp_path, reg)
-    r = c.get(f"/api/saves/{sid}/characters/3")
+    r = c.get(f"/api/saves/{sid}/characters/2")
     assert r.status_code == 200
     tl = [e for e in r.json()["timeline"] if e["type"] == "child_birth"]
     assert len(tl) == 1

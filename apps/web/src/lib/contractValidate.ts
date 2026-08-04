@@ -32,7 +32,9 @@ export type ValidationIssue =
   | "bad_timeline"
   | "bad_event_missing_field"
   | "bad_confidence"
-  | "bad_evidence";
+  | "bad_evidence"
+  | "bad_char_ref_array"
+  | "bad_char_ref";
 
 export class ContractValidationError extends Error {
   constructor(public kind: ValidationIssue, message: string) {
@@ -105,6 +107,55 @@ function validateTimelineEvent(ev: unknown, index: number): void {
   }
 }
 
+/** CharacterRef 人物引用（父母/子女/兄弟姐妹/好友/宿敌/恋人）结构校验（M5.1）。 */
+function validateCharacterRef(ref: unknown, label: string): void {
+  if (!isPlainObject(ref)) {
+    throw new ContractValidationError("bad_char_ref", `${label} 不是合法对象。`);
+  }
+  if (typeof ref.id !== "string" || ref.id.length === 0) {
+    throw new ContractValidationError(
+      "bad_char_ref",
+      `${label} 缺少合法的 id。`,
+    );
+  }
+  if (typeof ref.name !== "string") {
+    throw new ContractValidationError(
+      "bad_char_ref",
+      `${label}（id=${String(ref.id)}）缺少合法的 name。`,
+    );
+  }
+  if (ref.resolved !== undefined && typeof ref.resolved !== "boolean") {
+    throw new ContractValidationError(
+      "bad_char_ref",
+      `${label}（id=${String(ref.id)}）的 resolved 必须是 boolean。`,
+    );
+  }
+}
+
+const CHAR_REF_FIELDS = [
+  "parents",
+  "children",
+  "siblings",
+  "friends",
+  "rivals",
+  "lovers",
+] as const;
+
+/** 若档案存在人物引用列表字段，则校验其为「合法 CharacterRef 数组」。 */
+function validateCharacterRefFields(data: Record<string, unknown>): void {
+  for (const key of CHAR_REF_FIELDS) {
+    const v = data[key];
+    if (v === undefined) continue;
+    if (!Array.isArray(v)) {
+      throw new ContractValidationError(
+        "bad_char_ref_array",
+        `档案的 ${key} 必须是数组。`,
+      );
+    }
+    v.forEach((ref, i) => validateCharacterRef(ref, `档案 ${key}[${i}]`));
+  }
+}
+
 /**
  * 校验 Mock 索引包（FixtureEnvelope<MockIndexPayload>），返回类型化结果。
  * 索引包只应携带轻量摘要 + 档案定位符，不内联完整档案。
@@ -156,6 +207,8 @@ export function validateProfileEnvelope(
     );
   }
   data.timeline.forEach(validateTimelineEvent);
+  // M5.1：人物引用列表（父母/子女/兄弟姐妹/好友/宿敌/恋人）结构校验。
+  validateCharacterRefFields(data);
   // 返回档案本身（data），而非整个包裹；调用方按 CharacterProfile 使用。
   return data as unknown as CharacterProfile;
 }

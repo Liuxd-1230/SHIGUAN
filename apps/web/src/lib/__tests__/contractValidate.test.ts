@@ -97,4 +97,32 @@ describe("运行时边界校验（不依赖 TS 类型断言）", () => {
     expect(isTimelineEvent(validProfileEnv("abc").data.timeline[0])).toBe(true);
     expect(isTimelineEvent({ id: "x" })).toBe(false);
   });
+
+  it("合法 CharacterRef（含 resolved）通过校验", () => {
+    const env = validProfileEnv("abc");
+    env.data.parents = [
+      { id: "p1", name: "赵大", resolved: true, sourcePath: "character/abc/father" },
+      { id: "p2", name: "p2", resolved: false },
+    ];
+    expect(validateProfileEnvelope(env, "abc").parents.length).toBe(2);
+  });
+
+  it("CharacterRef.resolved 非 boolean 被拒绝", () => {
+    const env = validProfileEnv("abc");
+    env.data.children = [{ id: "c1", name: "孩子", resolved: "yes" }];
+    expect(() => validateProfileEnvelope(env, "abc")).toThrow(/resolved/);
+  });
+
+  it("CharacterRef 缺 name 被拒绝", () => {
+    const env = validProfileEnv("abc");
+    env.data.siblings = [{ id: "s1" }];
+    expect(() => validateProfileEnvelope(env, "abc")).toThrow(/name/);
+  });
+
+  it("人物引用列表字段非数组被拒绝", () => {
+    const env = validProfileEnv("abc");
+    // @ts-expect-error 故意注入非法形状
+    env.data.friends = {};
+    expect(() => validateProfileEnvelope(env, "abc")).toThrow(/必须是数组/);
+  });
 });

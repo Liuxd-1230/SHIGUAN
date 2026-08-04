@@ -134,7 +134,8 @@
           "name": "韦尔特公国",
           "type": "title",
           "sourcePath": null
-        }
+        },
+        "resolved": true
       }
     ],
     "spouses": [
@@ -175,7 +176,8 @@
           "name": "韦尔特公国",
           "type": "title",
           "sourcePath": null
-        }
+        },
+        "resolved": true
       },
       {
         "id": "elisabeth",
@@ -189,7 +191,8 @@
           "type": "dynasty",
           "sourcePath": null
         },
-        "primaryTitle": null
+        "primaryTitle": null,
+        "resolved": true
       }
     ],
     "siblings": [
@@ -205,7 +208,8 @@
           "type": "dynasty",
           "sourcePath": null
         },
-        "primaryTitle": null
+        "primaryTitle": null,
+        "resolved": true
       }
     ],
     "friends": [
@@ -216,7 +220,8 @@
         "birthDate": "1028.11.01",
         "deathDate": null,
         "dynasty": null,
-        "primaryTitle": null
+        "primaryTitle": null,
+        "resolved": true
       }
     ],
     "rivals": [
@@ -232,7 +237,8 @@
           "type": "dynasty",
           "sourcePath": null
         },
-        "primaryTitle": null
+        "primaryTitle": null,
+        "resolved": true
       }
     ],
     "lovers": [],

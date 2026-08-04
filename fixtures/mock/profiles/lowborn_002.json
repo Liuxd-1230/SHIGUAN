@@ -54,7 +54,8 @@
         "birthDate": "1068.02.14",
         "deathDate": null,
         "dynasty": null,
-        "primaryTitle": null
+        "primaryTitle": null,
+        "resolved": true
       }
     ],
     "siblings": [],

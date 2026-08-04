@@ -134,6 +134,85 @@ def test_no_parents_means_no_inferred_warning():
     assert not any(w.code == "inferred_parent" for w in p.evidenceWarnings)
 
 
+# ---------------------------------------------------------------------------
+# M5.1：CharacterRef.resolved —— 父母/子女/兄弟姐妹按 by_id+loader 解析并标注
+# ---------------------------------------------------------------------------
+
+
+def _loader_with_names() -> LocalizationLoader:
+    loader = LocalizationLoader()
+    loader._data["zh-Hans"] = {
+        "Hua_83EF": "华",
+        "max_chinese_male_name_1001": "赵大",
+        "max_chinese_male_name_1002": "钱二",
+        "Maurizio": "毛里齐奥",
+    }
+    return loader
+
+
+def test_parents_children_resolved_via_by_id_and_loader():
+    """M5.1：父母/子女名字经 by_id 人物索引 + loader 解析，resolved=True。"""
+    stub = _stub()
+    stub["father"] = "1001"
+    stub["mother"] = "1002"
+    stub["children"] = ["1003"]
+    stub["parent_source"] = "child_backref"
+    by_id = {
+        "1001": {"id": "1001", "name": "max_chinese_male_name_1001"},
+        "1002": {"id": "1002", "name": "max_chinese_male_name_1002"},
+        "1003": {"id": "1003", "name": "Maurizio"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id)
+
+    by_ref = {r.id: r for r in p.parents}
+    assert by_ref["1001"].name == "赵大"
+    assert by_ref["1001"].resolved is True
+    assert by_ref["1002"].name == "钱二"
+    assert by_ref["1002"].resolved is True
+
+    child = p.children[0]
+    assert child.id == "1003"
+    assert child.name == "毛里齐奥"
+    assert child.resolved is True
+
+
+def test_unresolved_character_ref_keeps_id_resolved_false():
+    """M5.1：人物不在索引中 → name=原始 id、resolved=False（不编造占位姓名）。"""
+    stub = _stub()
+    stub["father"] = "9999"
+    stub["parent_source"] = "child_backref"
+    p = to_profile(stub, by_id={})
+    assert p.parents[0].name == "9999"
+    assert p.parents[0].resolved is False
+
+
+def test_sibling_refs_resolved():
+    """M5.1：兄弟姐妹名字同样经 by_id+loader 解析并标注 resolved。"""
+    stub = _stub()
+    stub["father"] = "1001"
+    stub["mother"] = "1002"
+    by_id = {
+        "1001": {"id": "1001", "name": "max_chinese_male_name_1001"},
+        "1002": {"id": "1002", "name": "max_chinese_male_name_1002"},
+        "6432": {"id": "6432", "name": "Hua_83EF", "father": "1001", "mother": "1002"},
+        "2001": {"id": "2001", "name": "Hua_83EF", "father": "1001", "mother": "1002"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id)
+    sib = next(r for r in p.siblings if r.id == "2001")
+    assert sib.name == "华"  # Hua_83EF → 華（hex 解码，_loader_with_names 也含）
+    assert sib.resolved is True
+
+
+def test_parents_deduplicated_by_id():
+    """M5.1：父母列表按 id 去重（father 与 real_father 同 id 不重复出现）。"""
+    stub = _stub()
+    stub["father"] = "1001"
+    stub["real_father"] = "1001"
+    stub["parent_source"] = "child_backref"
+    p = to_profile(stub, by_id={})
+    assert [r.id for r in p.parents] == ["1001"]
+
+
 def test_death_event_from_dead_data_with_reason_and_killer():
     stub = _stub()
     stub.update(

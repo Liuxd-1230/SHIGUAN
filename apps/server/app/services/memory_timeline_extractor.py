@@ -242,10 +242,13 @@ class MemoryTimelineIndex:
         return cid
 
     def _char_ref(self, cid, source_path: Optional[str] = None) -> CharacterRef:
+        cid_s = str(cid)
         return CharacterRef(
-            id=str(cid),
+            id=cid_s,
             name=self._char_name(cid),
             sourcePath=source_path,
+            # M5.1：resolved 如实标注（名字被本地化/hex 转换过才算已解析）。
+            resolved=self._resolved_cache.get(cid_s, False),
         )
 
     # -- 归属 ------------------------------------------------------------------
