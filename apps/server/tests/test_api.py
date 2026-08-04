@@ -37,6 +37,35 @@ def test_health():
     assert r.json()["status"] == "ok"
 
 
+def test_adapter_subprocess_decodes_utf8_explicitly(monkeypatch):
+    """回归：ck3-reader 恒输出 UTF-8（含中文玩家名/Mod 名），_run 必须显式
+    encoding="utf-8" 解码，否则中文 Windows（GBK 区域）经 subprocess text=True
+    缺省解码报 UnicodeDecodeError。pytest 在 Git Bash 有 PYTHONUTF8=1 会掩盖
+    此问题（启动器从 PowerShell 启动即暴露），故用 monkeypatch 锁死调用参数。"""
+    import subprocess as sp_mod
+    import types
+
+    from app.adapters.ck3_reader_adapter import Ck3ReaderAdapter
+
+    captured: dict = {}
+
+    def fake_run(*_args, **_kwargs):
+        captured["kwargs"] = _kwargs
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout='{"player_name": "节度使，李瑀", "mod_count": 33}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(sp_mod, "run", fake_run)
+    adapter = Ck3ReaderAdapter()
+    out = adapter._run("meta", "some/cache")
+    assert captured["kwargs"].get("encoding") == "utf-8", "必须显式 UTF-8 解码 reader 输出"
+    assert captured["kwargs"].get("errors") == "replace", "解码失败应以 replace 兜底而非崩溃"
+    assert out["player_name"] == "节度使，李瑀"
+    assert out["mod_count"] == 33
+
+
 def test_settings_paths():
     r = client.get("/api/settings/paths")
     assert r.status_code == 200

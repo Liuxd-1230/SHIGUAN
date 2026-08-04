@@ -75,7 +75,20 @@ export interface CharacterPage {
 let _available: boolean | null = null;
 
 async function _getJson(path: string, signal?: AbortSignal): Promise<unknown> {
-  const res = await fetch(`${BASE}${path}`, { signal });
+  return _request("GET", path, undefined, signal);
+}
+
+/**
+ * 通用请求：显式指定 HTTP 方法，避免把 POST/DELETE 端点误用 GET（405）。
+ * 后端路由方法：rescan/import/parse/watch 为 POST，delete 为 DELETE，其余为 GET。
+ */
+async function _request(
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  init?: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const res = await fetch(`${BASE}${path}`, { method, signal, ...init });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`后端请求失败（${res.status}）：${text.slice(0, 200)}`);
@@ -111,7 +124,7 @@ export const api = {
       saves: LocalSaveSummary[];
     }>,
   rescanLocalSaves: (signal?: AbortSignal) =>
-    _getJson("/api/local-saves/rescan", signal) as Promise<{
+    _request("POST", "/api/local-saves/rescan", undefined, signal) as Promise<{
       available: boolean;
       saves: LocalSaveSummary[];
     }>,
@@ -123,7 +136,7 @@ export const api = {
       report: ModReport;
     }>,
   parseSave: (saveId: string, signal?: AbortSignal) =>
-    _getJson(`/api/local-saves/${saveId}/parse`, signal) as Promise<ParseResult>,
+    _request("POST", `/api/local-saves/${saveId}/parse`, undefined, signal) as Promise<ParseResult>,
   listCharacters: (
     saveId: string,
     opts: { limit?: number; offset?: number; q?: string } = {},
@@ -144,7 +157,10 @@ export const api = {
       signal,
     ) as Promise<CharacterProfile>,
   deleteSave: (saveId: string, signal?: AbortSignal) =>
-    _getJson(`/api/saves/${saveId}`, signal) as Promise<{ saveId: string; removed: boolean }>,
+    _request("DELETE", `/api/saves/${saveId}`, undefined, signal) as Promise<{
+      saveId: string;
+      removed: boolean;
+    }>,
 };
 
 export const API_BASE = BASE;

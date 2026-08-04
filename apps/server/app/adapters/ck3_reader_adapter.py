@@ -56,7 +56,13 @@ class Ck3ReaderAdapter:
             proc = subprocess.run(
                 [str(bin_path), *args],
                 capture_output=True,
+                # 关键：ck3-reader 恒输出 UTF-8（含中文玩家名/Mod 名/人物名）。
+                # 中文 Windows 默认 GBK 区域下，缺省 text=True 会用 GBK 解码 UTF-8
+                # 字节而抛 UnicodeDecodeError（pytest 在 Git Bash 有 PYTHONUTF8=1 掩盖了它，
+                # 启动器从 PowerShell 启动即暴露）。errors="replace" 兜底不静默崩溃。
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=READER_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
