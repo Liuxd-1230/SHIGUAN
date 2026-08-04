@@ -1,0 +1,35 @@
+SHIGUAN Windows 启动器 v5.1
+==========================
+
+v5 修复 start.ps1 的一个隐蔽问题：
+如果启动时检测到 ck3-reader 源码比二进制新（或二进制缺失），
+启动器会触发 Rust 重建——但旧版重建命令没有携带
+CK3_IRONMAN_TOKENS 令牌表环境变量。
+
+后果：
+不带令牌表变量构建时，ck3save 会把"空 EnvTokens"编译进二进制，
+melt 真实二进制存档只会输出 25 字节 header（所有字段丢失），
+且不会报错——表现为"解析成功但没有任何人物数据"。
+
+v5 修复：
+- 重建时自动选择令牌表（与 tools\ck3-reader\build.sh 一致）：
+  优先真实表 tokens\ck3_tokens_real.txt（字段名可读），
+  缺失时回退占位表 tokens\ck3_tokens.txt 并给出明确警告。
+- 使用占位表时会提示：python tools\ck3-reader\extract_tokens.py --verify
+
+v5.1 追加（真实存档线上验证发现）：
+- 后端修复：ck3-reader 子进程输出恒为 UTF-8（含中文玩家名/Mod 名），
+  adapter 现显式以 UTF-8 解码；此前中文 Windows（GBK 区域）经
+  subprocess 默认解码会报 UnicodeDecodeError（500）。
+- stop.ps1 兜底补齐：即使状态文件缺失/记录不全，也会清理本项目
+  残留的后端（uvicorn app.main:app）与前端（vite/node/esbuild）
+  进程；路径/命令行不符的其他程序一律不碰。
+
+使用：
+1. 双击 start.bat 一键启动（首次会自动装依赖并构建解析器，然后打开浏览器）。
+   - 参数（可选）：powershell -File start.ps1 -NoBrowser / -SkipInstall / -ForceRebuild
+2. 双击 stop.bat 停止（会先核对 PID 命令行标记，拒绝误杀被复用的 PID）。
+
+说明：
+- 日志与进程记录位于 data\runtime\（已被 .gitignore 排除，不提交）。
+- 已运行的 SHIGUAN 服务会被复用，不会重复启动。
