@@ -37,11 +37,13 @@ def test_health():
     assert r.json()["status"] == "ok"
 
 
-def test_adapter_subprocess_decodes_utf8_explicitly(monkeypatch):
+def test_adapter_subprocess_decodes_utf8_explicitly(monkeypatch, tmp_path):
     """回归：ck3-reader 恒输出 UTF-8（含中文玩家名/Mod 名），_run 必须显式
     encoding="utf-8" 解码，否则中文 Windows（GBK 区域）经 subprocess text=True
     缺省解码报 UnicodeDecodeError。pytest 在 Git Bash 有 PYTHONUTF8=1 会掩盖
-    此问题（启动器从 PowerShell 启动即暴露），故用 monkeypatch 锁死调用参数。"""
+    此问题（启动器从 PowerShell 启动即暴露），故用 monkeypatch 锁死调用参数。
+    binary 传临时假文件：_require 的存在性检查在无 Rust 二进制的 CI 上也能通过，
+    subprocess 已被 mock，不会真的执行该文件。"""
     import subprocess as sp_mod
     import types
 
@@ -58,7 +60,9 @@ def test_adapter_subprocess_decodes_utf8_explicitly(monkeypatch):
         )
 
     monkeypatch.setattr(sp_mod, "run", fake_run)
-    adapter = Ck3ReaderAdapter()
+    fake_bin = tmp_path / "ck3-reader"
+    fake_bin.write_bytes(b"#!fake-binary")
+    adapter = Ck3ReaderAdapter(binary=fake_bin)
     out = adapter._run("meta", "some/cache")
     assert captured["kwargs"].get("encoding") == "utf-8", "必须显式 UTF-8 解码 reader 输出"
     assert captured["kwargs"].get("errors") == "replace", "解码失败应以 replace 兜底而非崩溃"
