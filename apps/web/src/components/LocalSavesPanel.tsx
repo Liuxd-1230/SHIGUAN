@@ -9,9 +9,7 @@
  */
 import { useEffect, useState } from "react";
 import { navigate, ROUTES } from "../lib/router";
-import { useStore } from "../store";
 import { api, API_BASE, checkBackendAvailable, type LocalSaveSummary } from "../lib/api";
-import { setActiveSaveId } from "../lib/realRepository";
 import MuseumSurface from "./MuseumSurface";
 import SealButton from "./SealButton";
 
@@ -111,21 +109,13 @@ export default function LocalSavesPanel() {
   }, []);
 
   async function handleParse(s: LocalSaveSummary) {
+    // M5：解析进入真实解析过程页（阶段由后端真实驱动），完成后自动进选择页。
     setBusyId(s.saveId);
     setError(null);
     try {
-      const result = await api.parseSave(s.saveId);
-      // 切换到真实后端模式并重置索引，使选择页重新从后端拉取全量人物。
-      useStore.setState({
-        backendMode: true,
-        indexLoaded: false,
-        characterIndex: [],
-        saveMeta: null,
-        selectedCharacterId: null,
-        profileCache: {},
-      });
-      setActiveSaveId(s.saveId, result.meta);
-      navigate(ROUTES.savesCharacters(s.saveId));
+      // 先做一次健康确认：若存档已解析过，仍走过程页（后端 warm cache，秒级完成）。
+      await api.inspectSave(s.saveId);
+      navigate(ROUTES.saveParse(s.saveId));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -180,7 +170,12 @@ export default function LocalSavesPanel() {
         const t = await res.text();
         throw new Error(t.slice(0, 160));
       }
+      const body = (await res.json()) as { saveId?: string };
       await refresh();
+      // M5：导入成功后自动进入该存档的解析过程页（对齐 Mock「上传→解析→选择」演示）。
+      if (body.saveId) {
+        navigate(ROUTES.saveParse(body.saveId));
+      }
     } catch (e2) {
       setError(e2 instanceof Error ? e2.message : String(e2));
     } finally {

@@ -92,6 +92,31 @@ describe("TimelineNode（键盘可达 / aria-current）", () => {
     render(<TimelineNode event={ev} active={false} onSelect={() => {}} inChapter />);
     expect(screen.getByRole("button")).not.toHaveAttribute("aria-current");
   });
+
+  it("mergedCount>1 时显示「已合并 N 条记录」徽标", () => {
+    render(
+      <TimelineNode
+        event={{ ...ev, mergedCount: 2 }}
+        active={false}
+        onSelect={() => {}}
+        inChapter={false}
+      />,
+    );
+    expect(screen.getByText("已合并 2 条记录")).toBeInTheDocument();
+  });
+
+  it("mergedCount 缺省/为 1 时不显示合并徽标", () => {
+    const { container } = render(
+      <TimelineNode
+        event={ev}
+        active={false}
+        onSelect={() => {}}
+        inChapter={false}
+      />,
+    );
+    expect(screen.queryByText(/已合并/)).not.toBeInTheDocument();
+    expect(container.querySelectorAll("span").length).toBeGreaterThan(0);
+  });
 });
 
 describe("InkDivider（装饰分隔线）", () => {

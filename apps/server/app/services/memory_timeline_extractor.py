@@ -48,6 +48,7 @@ from models import (
 
 from app.services.localization import LocalizationLoader
 from app.services.title_reign_extractor import _date_key
+from app.services.character_extractor import resolve_display_name
 
 # 记忆类型 -> 主体角色（条目里“该记忆涉及的对象”的角色）。
 # married / child_born 这类“owner 在条目外”：主体角色是对方，owner 需交叉核对。
@@ -230,10 +231,11 @@ class MemoryTimelineIndex:
             return cid
         nk = stub.get("name") or ""
         if nk:
-            name = self._loc.resolve(nk) if self._loc else None
-            resolved = bool(name)
+            # M5：统一名字解析（本地化 → 拼音hex 解码 → 原 key）。
+            name = resolve_display_name(nk, self._loc)
+            resolved = name != nk
             self._resolved_cache[cid] = resolved
-            self._name_cache[cid] = name or nk
+            self._name_cache[cid] = name
             return self._name_cache[cid]
         self._resolved_cache[cid] = False
         self._name_cache[cid] = cid

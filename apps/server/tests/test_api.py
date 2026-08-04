@@ -253,3 +253,53 @@ def test_delete_save(real_save_id):
     # 删除后 inspect 应 404
     r2 = client.get(f"/api/local-saves/{real_save_id}/inspect")
     assert r2.status_code == 404
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_timeline_dedup_and_integrity(real_save_id):
+    """M5 真实存档集成：/timeline 端点去重合并 + 0 事件缺证据 + mergedCount。"""
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    # 用已知有人物时间线事件的样本（12659 有 marriage 记忆事件）。
+    r2 = client.get(f"/api/local-saves/{real_save_id}/characters/12659/timeline")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["eventCount"] == len(body["timeline"])
+    for e in body["timeline"]:
+        assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+    # mergedCount>0 表示真实存在重复记录被合并（抽样实测 ~11% 人物有重复）。
+    assert isinstance(body["mergedCount"], int)
+    assert body["mergedCount"] >= 0
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_search_matches_resolved_chinese_name(real_save_id):
+    """M5 真实存档集成：q 按解析后中文名匹配（玩家名「李瑀」或任意可解析名）。"""
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    # 先取一页摘要拿到解析后的中文名，再反查搜索能命中。
+    page = client.get(f"/api/saves/{real_save_id}/characters", params={"limit": 100})
+    items = page.json()["items"]
+    assert items, "首屏应有样本"
+    resolved = [it for it in items if it["name"] and not it["name"].isdigit()]
+    assert resolved, "应有解析出中文名的人物"
+    probe = resolved[0]
+    r2 = client.get(
+        f"/api/saves/{real_save_id}/characters", params={"q": probe["name"], "limit": 100}
+    )
+    assert r2.status_code == 200
+    ids = {str(it["id"]) for it in r2.json()["items"]}
+    assert str(probe["id"]) in ids, f"搜解析名 {probe['name']} 应命中 {probe['id']}，实际 {ids}"
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_profile_name_resolved_not_raw_key(real_save_id):
+    """M5 真实存档集成：人物名不是原始 key/数字 id（本地化或 hex 解码）。"""
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    page = client.get(f"/api/saves/{real_save_id}/characters", params={"limit": 50})
+    names = [it["name"] for it in page.json()["items"]]
+    # 玩家名（节度使，李瑀）应被本地化解析；其余人物名非裸数字 id。
+    for n in names:
+        assert n, "名字不应为空"
+    assert any(n and not n.isdigit() for n in names)

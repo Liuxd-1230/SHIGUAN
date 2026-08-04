@@ -35,6 +35,8 @@ export const ROUTES = {
     `/saves/${encodeURIComponent(saveId)}/characters`,
   saveCharacter: (saveId: string, id: string) =>
     `/saves/${encodeURIComponent(saveId)}/characters/${encodeURIComponent(id)}`,
+  // 真实存档解析过程页（对齐 Mock ParsePage 的分阶段体验，阶段由真实后端驱动）。
+  saveParse: (saveId: string) => `/saves/${encodeURIComponent(saveId)}/parse`,
   designlab: "/design-lab",
 } as const;
 
@@ -53,6 +55,15 @@ export function parsePath(pathname: string): Route {
       name: "bio",
       path: p,
       params: { characterId: decodeURIComponent(m[1]) },
+    };
+  }
+  // 真实存档解析过程页（阶段由真实后端驱动，非 Mock）。
+  const rp = p.match(/^\/saves\/([^/]+)\/parse\/?$/);
+  if (rp) {
+    return {
+      name: "parse",
+      path: p,
+      params: { saveId: decodeURIComponent(rp[1]) },
     };
   }
   // 真实存档浏览（URL 携带 saveId，可刷新恢复）

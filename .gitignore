@@ -58,3 +58,6 @@ Thumbs.db
 
 # ---- PWA 构建产物（sw.js 是源码，须随仓库发布；dist 才是构建产物） ----
 apps/web/dist/
+
+# ---- 本机开发工具目录（不上传） ----
+.zcode/

@@ -11,6 +11,7 @@ import type {
   CharacterProfile,
   CharacterSummary,
   ParsedSaveMeta,
+  TimelineEvent,
 } from "@shiguan/save-schema";
 
 const envBase = (import.meta.env as Record<string, unknown>).VITE_API_BASE;
@@ -156,6 +157,27 @@ export const api = {
       `/api/saves/${saveId}/characters/${encodeURIComponent(characterId)}`,
       signal,
     ) as Promise<CharacterProfile>,
+  getTimeline: (
+    saveId: string,
+    characterId: string,
+    signal?: AbortSignal,
+  ) =>
+    _getJson(
+      `/api/local-saves/${saveId}/characters/${encodeURIComponent(characterId)}/timeline`,
+      signal,
+    ) as Promise<{
+      saveId: string;
+      characterId: string;
+      eventCount: number;
+      mergedCount: number;
+      mergeDetails: Array<{
+        key_type: string;
+        date: string;
+        primary: string;
+        merged_ids: string[];
+      }>;
+      timeline: TimelineEvent[];
+    }>,
   deleteSave: (saveId: string, signal?: AbortSignal) =>
     _request("DELETE", `/api/saves/${saveId}`, undefined, signal) as Promise<{
       saveId: string;

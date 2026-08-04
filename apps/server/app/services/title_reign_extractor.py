@@ -388,6 +388,24 @@ class TitleProfileIndex:
             if any(p.isCurrent for p in ps)
         }
 
+    def holder_ids_for_title(self, title_query: str) -> set[str]:
+        """按头衔名（含 key 与解析后名）反查持有者 id 集合（M5 搜索）。
+
+        子串匹配（不区分大小写）：`titleQuery=幽蓟` 或 `k_youji` 均可命中。
+        返回空集表示无匹配（调用方应据此过滤为空，而不是返回全部）。
+        """
+        needle = (title_query or "").strip().lower()
+        if not needle:
+            return set()
+        out: set[str] = set()
+        for cid, ps in self._periods.items():
+            for p in ps:
+                for n in (p.name, p.titleId):
+                    if n and needle in str(n).lower():
+                        out.add(cid)
+                        break
+        return out
+
     def primary_bits(self, character_id: str) -> TitleSummaryBits:
         """按需计算摘要位（primaryTitle / highestTier / isRuler / warning 计数）。
 

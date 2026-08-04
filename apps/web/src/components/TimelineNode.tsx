@@ -67,7 +67,17 @@ export default function TimelineNode({
           <span className="text-xs text-ink-600">
             {event.date ?? "日期不详"}
           </span>
-          <EvidenceBadge value={event.confidence} showLabel={false} />
+          <span className="flex items-center gap-1.5">
+            {event.mergedCount && event.mergedCount > 1 && (
+              <span
+                title="存档中该事件有多条重复记录，已去重合并并保留全部证据"
+                className="rounded border border-gold-500/50 bg-gold-500/10 px-1.5 py-0.5 text-[10px] text-gold-800"
+              >
+                已合并 {event.mergedCount} 条记录
+              </span>
+            )}
+            <EvidenceBadge value={event.confidence} showLabel={false} />
+          </span>
         </div>
         <p
           className={cn(

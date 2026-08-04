@@ -5,6 +5,7 @@ import { useRoute, navigate, ROUTES } from "./lib/router";
 import Header from "./components/Header";
 import StartPage from "./pages/StartPage";
 import ParsePage from "./pages/ParsePage";
+import RealParsePage from "./pages/RealParsePage";
 import SelectPage from "./pages/SelectPage";
 import BiographyPage from "./pages/BiographyPage";
 import DesignLabPage from "./pages/DesignLabPage";
@@ -115,7 +116,12 @@ export default function App() {
   } else if (route.name === "start") {
     page = <StartPage />;
   } else if (route.name === "parse") {
-    page = <ParsePage />;
+    // 带 saveId 的真实解析过程页；无 saveId 走 Mock 演示流程。
+    page = route.params.saveId ? (
+      <RealParsePage saveId={route.params.saveId} />
+    ) : (
+      <ParsePage />
+    );
   } else if (route.name === "select") {
     page = <SelectPage />;
   } else if (route.name === "bio") {

@@ -35,7 +35,58 @@ from models import (
 )
 
 from app.services.localization import LocalizationLoader
-from app.services.title_reign_extractor import TitleSummaryBits, _date_key
+from app.services.title_reign_extractor import TitleSummaryBits
+from app.services.timeline_builder import merge_timeline
+
+import re
+
+# 拼音+汉字hex 名字段（如 "4EF2"）——4 位十六进制。
+_HEX_SEG_RE = re.compile(r"^[0-9A-Fa-f]{4}$")
+
+
+def _decode_hex_name(nk: str) -> Optional[str]:
+    """拼音+汉字hex 形态（如 Zhongrong_4EF2_5BB9）→ 按 unicode 码点解码为汉字。
+
+    本地化表未覆盖时的**确定性**兜底：游戏中文版即按名字生成器的码点渲染
+    （4EF2=仲、5BB9=容），解码非编造。仅当解码结果全部落在 CJK 区才采用，
+    防止把 Maurizio / O_zgul 这类拉丁名误判。
+    """
+    if not nk or "_" not in nk:
+        return None
+    segments = nk.split("_")
+    hex_parts = [s for s in segments if _HEX_SEG_RE.match(s)]
+    if not hex_parts:
+        return None
+    try:
+        chars = "".join(chr(int(h, 16)) for h in hex_parts)
+    except ValueError:
+        return None
+    if not chars or not all(
+        "\u3400" <= c <= "\u9fff" or "\uf900" <= c <= "\ufaff" for c in chars
+    ):
+        return None
+    return chars
+
+
+def resolve_display_name(nk: str, loader: Optional[LocalizationLoader] = None) -> str:
+    """把人物名字 key 解析为可读中文名（M5，与游戏中文显示一致）。
+
+    解析顺序（诚实性优先，全部未命中才回退原 key，绝不编造）：
+      1) 本地化表（zh-Hans → english）：loc key（max_chinese_male_name_117825→李瑀）
+         与拉丁音译（Maurizio→毛里齐奥）都有精确条目；
+      2) 拼音+汉字hex 形态（Zhongrong_4EF2_5BB9→仲容）确定性解码；
+      3) 回退原 key（如纯拉丁字符串且本地化缺失时保留原文，不伪造）。
+    """
+    if not nk:
+        return nk
+    if loader is not None:
+        resolved = loader.resolve(nk)
+        if resolved:
+            return resolved
+    decoded = _decode_hex_name(nk)
+    if decoded:
+        return decoded
+    return nk
 
 
 def _resolve_char_name(cid, by_id=None, loader: Optional[LocalizationLoader] = None) -> str:
@@ -44,6 +95,7 @@ def _resolve_char_name(cid, by_id=None, loader: Optional[LocalizationLoader] = N
     M4：人物索引里 name 是本地化键（如 max_chinese_male_name_117825），
     loader（含游戏本地化表）把它解析成真实人名；loader 缺失时回退为键本身，
     无论如何都比裸数字 id 可读。
+    M5：名字解析统一走 resolve_display_name（本地化 → 拼音hex 解码 → 原 key）。
     """
     stub = (by_id or {}).get(str(cid))
     if not stub:
@@ -51,11 +103,7 @@ def _resolve_char_name(cid, by_id=None, loader: Optional[LocalizationLoader] = N
     nk = stub.get("name") or ""
     if not nk:
         return str(cid)
-    if loader is not None:
-        resolved = loader.resolve(nk)
-        if resolved:
-            return resolved
-    return nk
+    return resolve_display_name(nk, loader)
 
 
 def derive_siblings(stub: dict, by_id: Optional[dict] = None) -> list[CharacterRef]:
@@ -275,7 +323,7 @@ def to_summary(
     title_bits: Optional[TitleSummaryBits] = None,
 ) -> CharacterSummary:
     name_key = stub.get("name") or ""
-    name = loader.resolve(name_key) if (loader and name_key) else name_key
+    name = resolve_display_name(name_key, loader) if name_key else name_key
     warn_count = len(stub.get("evidence_warnings", []) or [])
     is_ruler = bool(stub.get("ruler", False))
     if title_bits is not None:
@@ -333,7 +381,7 @@ def to_profile(
     """
     cid = str(stub.get("id"))
     name_key = stub.get("name") or ""
-    name = loader.resolve(name_key) if (loader and name_key) else name_key
+    name = resolve_display_name(name_key, loader) if name_key else name_key
     alive = stub.get("alive", True)
     death = stub.get("death")
 
@@ -447,8 +495,11 @@ def to_profile(
         lovers = rel.lovers
         warnings = list(warnings) + list(memory_index.warnings(cid))
 
-    # 时间线按日期数值排序（未知日期排最后），保持各页/章节稳定顺序。
-    timeline.sort(key=lambda e: _date_key(e.date or ""))
+    # M5：三来源事件统一去重合并 + 排序（TimelineBuilder）。
+    # 同一存档记录的多处重复呈现（如 child_born + first_born 双记忆同 child+date）
+    # 合并为一条并聚合证据，0 事件缺证据保持不变。
+    merged = merge_timeline(timeline)
+    timeline = merged.timeline
     if title_warnings:
         warnings = list(warnings) + list(title_warnings)
 

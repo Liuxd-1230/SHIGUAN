@@ -179,11 +179,12 @@
 
 ---
 
-## Phase 2B —— 真实人物语义深化（M1–M4 已完成）
+## Phase 2B —— 真实人物语义深化（M1–M5 已完成）
 
 > Phase 2B 在 Phase 2A（后端 + 真实解析 MVP）之上把人物语义做深：
 > 反推真实 token、修复人物字段提取（M1）、实体索引 + 引用解析（M2）、
-> 头衔与统治经历（M3）、关系与记忆深化（M4）。真实存档 1.19.0.6 三方交叉验证一致。
+> 头衔与统治经历（M3）、关系与记忆深化（M4）、
+> 时间线去重合并 + 搜索/导入/人名中文化（M5）。真实存档 1.19.0.6 三方交叉验证一致。
 
 完成项：
 - ✅ M1（#117，commit `fa1dfd2`）：反推真实 token（修正 4 个错误假设）+ 重写 `scan_characters_full`（多容器 `living`/`dead_unprunable`/`dead_prunable` = 44096 人物、反推父母、traits/sex/spouse 真值）+ 诊断子命令四方修复 + 独立 Python `expect.py` 三方交叉验证一致。详见 `docs/character-field-research.md`。
@@ -192,6 +193,18 @@
 - ✅ M3 连带修复（真实集成测试暴露的回归）：M2 误删 `POST /local-saves/{id}/parse` 装饰器（补回 + 新增 `test_critical_routes_registered` 路由注册表防护）；`extract_field` 子串匹配把 `save_game_version=15` 误命中 `version`（改整词匹配，game_version 恢复 "1.19.0.6"）；trait 本地化查不到回退原 id（不伪造）；缓存 meta.json 增加 `reader_version` 门槛 + **二进制指纹门禁**（占位/真实 token 表构建互不复用缓存，防静默 25 字节空数据）；test_api 的 35078→44096 断言同步。
 - ✅ M4（#120，本提交）：关系与记忆深化 —— Rust `scan_memories`（`memories.json`：id/type/participants 角色表/creation_date/end_date/battle_location，容忍 `NUMBER=none` 与无日期条目）+ `scan_characters_full` 增 `former_spouses`(t3241)/`betrothed`(t2bb9)/`concubine`(t2bd3)/`concubinist`(t336e)/`former_concubinists`(t33a2)/`former_concubines`(t33a3) 6 字段；Python `MemoryTimelineIndex`（主体角色归属表 → `CharacterProfile.memories` + 时间线事件 + 好友/宿敌/恋人 date-pairing 推断 + 告警，全程会话记录解析真实人名）；`GET /local-saves/{id}/characters/{cid}/memories`；前端 `MemoriesPanel`（关系 chips + 按日期排序记忆列表 + 空态/降级）；契约微调（`betrothed`/`concubine` + `RelationshipPeriod.isFormer`）。
 - ⚠️ 边界：`enum_resolved` 仅在 literal_key（明文存档）为 true；真实 token 表下字段名可读但 enum 值（faith/dynasty 等）仍为数字 id，中文化需本地化映射（M3.2 之后）。记忆 owner 无法从全局计数器解码：married/child_born 用 family_data 交叉引用归属（99.3%）、became_* 用日期配对推断（标 `inferred`）、owner 非 participant 的类型（imprisoned/ascended_throne_memory 等）诚实跳过并计数。地图 / 家族树 / LLM 传记正文未做。
+- ✅ M5（本提交）：时间线去重合并 + 搜索/导入/人名中文化 —— 契约 `TimelineEvent.mergedCount`（TS+Python 双端 + 契约测试）；新服务 `timeline_builder.py`（`merge_timeline` 纯函数：去重键 `(type, date, 首位 relatedCharacter/relatedTitle/location id)`、无日期不合并、证据按 id 聚合 0 缺证据、`mergedCount=组大小`）；`to_profile` 基础/头衔/记忆三来源统一走 merge；`GET /local-saves/{id}/characters/{cid}/timeline`；搜索修复（`q` 匹配**解析后字段** + `title=` 按 holder 反查过滤 + 模块级 LRU）；loader 缺失重建（重启/直达 URL 名字仍中文）；人名中文化（loc key → 本地化表 / 拼音hex 如 `Zhongrong_4EF2_5BB9` 确定性 Unicode 解码→「仲容」/ 拉丁名走游戏 `character_names_l_simp_chinese.yml` 音译）；前端 `RealParsePage`（真实后端 3 阶段：初检→Mod→melt 解析）+ `TimelineNode` 合并徽标 + `api.getTimeline`。
+
+### 本轮（Phase 2B M5）验证结果
+
+- Rust：`cargo fmt --all -- --check` 0 / `cargo clippy --release -- -D warnings` 0 / `cargo test --release` **20 passed** / `bash build.sh`（真实 token 表）构建成功（本轮未改 Rust，回归全绿）。
+- 契约 `save-schema`：**27 passed**（`TimelineEvent.mergedCount` 双端 roundtrip）。
+- 后端 pytest：无真实存档 **171 passed / 13 skipped**；真实存档（`SHIGUAN_TEST_SAVE`）**184 passed / 0 skipped**（含 `test_timeline_dedup_and_integrity`、`test_search_matches_resolved_chinese_name`、`test_profile_name_resolved_not_raw_key`、timeline 端点、title= 过滤、loader 缺失重建、hex 解码中文化）。
+- 前端：`tsc --noEmit` 0 错 / `npm run lint` 0 错 0 警告 / `vitest` **132 passed**（新增 `RealParsePage` 3 项、`TimelineNode` 合并徽标 2 项、`getTimeline` GET 断言）/ `vite build` 成功。
+- 真实存档实测：合并前抽样 400 人物中 **43 人（≈11%）** 有重复 `child_birth`（child_born + first_born/twins_born 双记忆，同 child+date）→ 合并后同键重复 **0**、0 事件缺证据；搜索中文名命中（`q=李` 命中 30 人含头衔名 李氏/李坑；玩家 12659 解析为「理古」）；名字中文化实测（`Hua_83EF`→「华」、`Zhongrong_4EF2_5BB9`→「仲容」、`Maurizio`→「毛里齐奥」）；`title=幽蓟` 过滤生效；loader 缺失重建回归通过。
+- 详细报告：`docs/phase2b-m5-report.md`。
+
+---
 
 ### 本轮（Phase 2B M3）验证结果
 

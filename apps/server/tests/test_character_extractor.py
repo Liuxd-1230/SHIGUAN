@@ -28,7 +28,8 @@ def _loader_with_culture() -> LocalizationLoader:
 def test_to_summary_no_loader():
     s = to_summary(_stub())
     assert s.id == "6432"
-    assert s.name == "Hua_83EF"
+    # M5：无 loader 时拼音hex 名（Hua_83EF）按 unicode 码点确定性解码为汉字（華）
+    assert s.name == "華"
     assert s.culture.id == "asian_han_chinese"
     assert s.culture.resolved is False  # 无 loader，保留原键
     assert s.faith.id == "41"  # token-id，未解析
@@ -41,11 +42,26 @@ def test_to_summary_with_loader_resolves_culture():
     s = to_summary(_stub(), _loader_with_culture())
     assert s.culture.name == "汉文化"
     assert s.culture.resolved is True
-    # 名称键未在 loader 中 → 保留原键，不伪造
-    assert s.name == "Hua_83EF"
+    # M5：名称键未在 loader 中 → 拼音hex 解码为汉字（華）；纯拉丁名才保留原键
+    assert s.name == "華"
     # faith/dynasty 仍是 token-id，无法本地化
     assert s.faith.resolved is False
     assert s.dynasty.resolved is False
+
+
+def test_to_summary_foreign_name_resolved_via_loader():
+    """M5：外国人名经游戏本地化音译表解析（Maurizio→毛里齐奥），与游戏中文一致。"""
+    loader = LocalizationLoader()
+    loader._data["zh-Hans"] = {"Maurizio": "毛里齐奥"}
+    s = to_summary({"id": "9", "name": "Maurizio", "alive": True}, loader)
+    assert s.name == "毛里齐奥"
+
+
+def test_to_summary_pinyin_hex_name_decoded():
+    """M5：拼音hex 形态（Zhongrong_4EF2_5BB9）确定性解码为汉字（仲容）。"""
+    loader = LocalizationLoader()
+    s = to_summary({"id": "9", "name": "Zhongrong_4EF2_5BB9", "alive": True}, loader)
+    assert s.name == "仲容"
 
 
 def test_to_summary_dead():

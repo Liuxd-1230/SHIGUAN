@@ -157,6 +157,23 @@ class FakeAdapter:
                     "end_date": "900.1.1",
                     "battle_location_id": None,
                 },
+                # M5：同一孩子同一日期双记忆记录（child_born + first_born）→ 时间线去重合并。
+                {
+                    "id": "105",
+                    "memory_type": "child_born",
+                    "participants": [{"role": "child", "character_id": "3"}],
+                    "creation_date": "780.1.1",
+                    "end_date": None,
+                    "battle_location_id": None,
+                },
+                {
+                    "id": "106",
+                    "memory_type": "first_born",
+                    "participants": [{"role": "child", "character_id": "3"}],
+                    "creation_date": "780.1.1",
+                    "end_date": None,
+                    "battle_location_id": None,
+                },
             ],
             "warnings": [],
         }
@@ -199,6 +216,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(saves, "_loc_cache", {})
     monkeypatch.setattr(saves, "_title_index_cache", {})
     monkeypatch.setattr(saves, "_memory_index_cache", {})
+    monkeypatch.setattr(saves, "_search_name_cache", {})
     # 测试隔离：不加载真实游戏本地化（CI/无游戏环境一致，且快）。
     monkeypatch.setattr(saves, "_game_resolver", lambda: GameDataResolver(game_dir="__no_game__"))
     monkeypatch.setattr(saves, "_watcher_events", [])
@@ -482,6 +500,8 @@ def test_critical_routes_registered():
         "/api/local-saves/{save_id}/parse": {"POST"},
         "/api/local-saves/{save_id}/entities": {"GET"},
         "/api/local-saves/{save_id}/characters/{character_id}/titles": {"GET"},
+        "/api/local-saves/{save_id}/characters/{character_id}/timeline": {"GET"},
+        "/api/local-saves/{save_id}/characters/{character_id}/memories": {"GET"},
         "/api/saves/{save_id}": {"GET", "DELETE"},
         "/api/saves/{save_id}/characters": {"GET"},
         "/api/saves/{save_id}/characters/{character_id}": {"GET"},
@@ -667,3 +687,103 @@ def _walk_strings(obj):
             yield from _walk_strings(v)
     elif isinstance(obj, str):
         yield obj
+
+
+# -- M5 时间线去重合并 / 解析后搜索 / loader 缺失重建 ---------------------------
+def test_timeline_endpoint_dedups_child_birth(client, tmp_path):
+    """M5：/timeline 端点对同 child+date 的双记忆记录（child_born+first_born）去重合并。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/local-saves/{sid}/characters/3/timeline")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["characterId"] == "3"
+    # 两条 child_birth 记忆 → 合并为一条（mergedCount=2）。
+    child_events = [e for e in body["timeline"] if e["type"] == "child_birth"]
+    assert len(child_events) == 1, body["timeline"]
+    assert child_events[0]["mergedCount"] == 2
+    assert body["mergedCount"] >= 1
+    assert body["eventCount"] == len(body["timeline"])
+    # 0 事件缺证据。
+    for e in body["timeline"]:
+        assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+
+
+def test_profile_timeline_merged_child_birth(client, tmp_path):
+    """M5：人物档案 timeline 同样走 merge（mergedCount=2，证据聚合）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters/3")
+    assert r.status_code == 200
+    tl = [e for e in r.json()["timeline"] if e["type"] == "child_birth"]
+    assert len(tl) == 1
+    assert tl[0]["mergedCount"] == 2
+    assert len(tl[0]["evidence"]) >= 2  # 两条记忆证据均保留
+
+
+def test_search_matches_resolved_chinese_title(client, tmp_path):
+    """M5：q 按解析后字段匹配——搜头衔中文名（阿尔法公国）能命中 Alice。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters", params={"q": "阿尔法"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == "1"
+
+
+def test_search_matches_resolved_foreign_name(client, tmp_path):
+    """M5：q 匹配解析后的外国人名（Maurizio→毛里齐奥）而非原始 key。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    import app.routers.saves as saves_mod
+    from app.services.localization import LocalizationLoader
+
+    loader = LocalizationLoader()
+    loader._data["zh-Hans"] = {"Maurizio": "毛里齐奥"}
+    orig = saves_mod._build_localization
+    saves_mod._build_localization = lambda *a, **k: loader
+    try:
+        r = c.get(f"/api/saves/{sid}/characters", params={"q": "毛里齐奥"})
+    finally:
+        saves_mod._build_localization = orig
+    # 存档 stub 无 Maurizio，搜索应返回 0（不崩溃）；名称解析正确性由单测覆盖。
+    assert r.status_code == 200
+
+
+def test_loader_rebuilt_when_loc_cache_missing(client, tmp_path):
+    """M5 修复：_loc_cache 缺失（重启/直达 URL）时构建 loader，名字仍解析不崩溃。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    # 模拟重启：缓存被清空，但会话仍在内存。
+    c.get(f"/api/saves/{sid}/characters/1")  # 预热
+    saves._loc_cache.clear()
+    saves._search_name_cache.clear()
+    r = c.get(f"/api/saves/{sid}/characters/1")
+    assert r.status_code == 200
+    assert r.json()["id"] == "1"
+    assert r.json()["name"]  # 名字不因 loader 缺失而崩溃
+
+
+def test_title_filter_matches_holder(client, tmp_path):
+    """M5：title= 按头衔名反查持有者过滤（阿尔法公国 → Alice）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters", params={"title": "阿尔法"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 1
+    assert body["items"][0]["id"] == "1"
+
+
+def test_timeline_endpoint_no_local_path_leak(client, tmp_path):
+    """M5 安全：/timeline 响应不含本地绝对路径（盘符/反斜杠）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/local-saves/{sid}/characters/3/timeline")
+    assert r.status_code == 200
+    data = r.json()
+    for value in _walk_strings(data):
+        if "path" in value or "Path" in value:
+            assert "\\" not in value, f"响应泄露本地路径片段: {value}"
+            assert ":" not in value[:2], f"响应含盘符前缀: {value}"

@@ -49,6 +49,8 @@ from app.config import (
     resolve_game_dir,
 )
 from app.services.character_extractor import to_profile, to_summary
+from app.services.character_extractor import _build_timeline_and_evidence
+from app.services.character_extractor import resolve_display_name
 from app.services.directory_watcher import DirectoryWatcher
 from app.services.game_data_resolver import GameDataResolver
 from app.services.game_def_loader import GameDefLoader
@@ -61,6 +63,7 @@ from app.services.save_registry import SaveRegistry, SaveStillWritingError
 from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
 from app.services.title_reign_extractor import TitleProfileIndex, build_title_events
+from app.services.timeline_builder import merge_timeline
 
 # Phase 2A.1 验证版本（占位 token 表针对此版本反推；新版本出现给兼容性提示）。
 VALIDATED_VERSION = "1.19.0.6"
@@ -162,6 +165,7 @@ def _on_watch_change(added, removed, changed) -> None:
                 _session_manager.drop_save(save_id)
                 _drop_title_index(save_id)
                 _drop_memory_index(save_id)
+                _drop_search_name_cache(save_id)
             except Exception:  # noqa: BLE001
                 pass
     del _watcher_events[:-50]
@@ -236,6 +240,74 @@ def _drop_memory_index(save_id: str) -> None:
     for k in list(_memory_index_cache.keys()):
         if k[0] == save_id:
             del _memory_index_cache[k]
+
+
+def _drop_search_name_cache(save_id: str) -> None:
+    """M5：清空该存档的名字解析缓存（settings 变更 / watch 失效 / 删除时调用）。"""
+    for k in list(_search_name_cache.keys()):
+        if k[0] == save_id:
+            del _search_name_cache[k]
+
+
+def _ensure_loader(sess, save_id: str) -> LocalizationLoader:
+    """获取（缓存缺失时构建）该存档的本地化加载器。
+
+    M5 修复：此前端点仅 `_loc_cache.get((save_id, signature))`，服务重启后缓存为
+    空且该存档未重新 parse 时 loader=None → 人物名（loc key / 拉丁音译 / 拼音hex）
+    完全不翻译、直接显示原始 key。现在缺失时按同 parse 逻辑构建并写入缓存。
+    """
+    key = (save_id, sess.signature)
+    loader = _loc_cache.get(key)
+    if loader is not None:
+        return loader
+    meta = _session_manager.meta(sess)
+    game_version = meta.get("game_version")
+    descriptors = _descriptors_from_meta(meta)
+    report = _mod_resolver().resolve(descriptors, game_version)
+    loader = _build_localization(save_id, sess.signature, report.required)
+    _loc_cache[key] = loader
+    return loader
+
+
+def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
+    """组装单人物档案的 M3 头衔位 + M4 记忆位（供 profile / timeline 端点共用）。
+
+    返回 (loader, title_periods, title_events, title_warnings, memory_index)。
+    索引与 loader 均按 (save_id, signature) 缓存复用，不重复扫描、不重新 melt。
+    """
+    loader = _ensure_loader(sess, save_id)
+    title_periods: list = []
+    title_events: list = []
+    title_warnings: list = []
+    try:
+        title_index, _ = _title_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        title_index = None
+    if title_index is not None:
+        title_periods = title_index.periods(character_id)
+        bits = title_index.primary_bits(character_id)
+        name_key = stub.get("name") or ""
+        display_name = loader.resolve(name_key) if (loader and name_key) else name_key
+        primary_period = None
+        if bits.primary is not None:
+            primary_period = next(
+                (
+                    p
+                    for p in title_periods
+                    if p.isCurrent and p.titleId == bits.primary.id
+                ),
+                None,
+            )
+        title_events = build_title_events(
+            character_id, display_name, title_periods, primary_period
+        )
+        title_warnings = title_index.warnings(character_id)
+    memory_index = None
+    try:
+        memory_index, _ = _memory_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        memory_index = None
+    return loader, title_periods, title_events, title_warnings, memory_index
 
 
 def _ensure_session(save_id: str):
@@ -315,6 +387,7 @@ def put_settings(req: PathsSettings):
     _loc_cache.clear()
     _title_index_cache.clear()
     _memory_index_cache.clear()
+    _search_name_cache.clear()
     return {"saved": saved}
 
 
@@ -679,6 +752,51 @@ def save_meta_endpoint(save_id: str):
 
 
 # -- 人物索引（服务端分页 + 搜索 + 筛选，不重新 melt） -----------------------
+# M5 搜索：名字解析结果缓存（name key → 可读名），避免 44096 人重复 resolve。
+# 键为 (save_id, signature, name_key)，随 saveId 失效由 _drop 清理。
+_search_name_cache: dict[tuple, str] = {}
+
+
+def _search_text_resolver(sess, save_id: str, title_index, loader):
+    """构造 `(stub) -> str` 搜索文本解析器（解析后名字 + 头衔名 + 关键字段）。
+
+    搜索范围：解析后的中文人名（loc key / 拉丁音译 / 拼音hex 解码）+ 原始名字键
+    （便于按拼音搜索）+ 头衔名（current/历史）+ 王朝/文化/信仰 id（数字可搜）。
+    """
+
+    def _name(nk: str) -> str:
+        if not nk:
+            return ""
+        key = (save_id, sess.signature, nk)
+        cached = _search_name_cache.get(key)
+        if cached is not None:
+            return cached
+        resolved = resolve_display_name(nk, loader)
+        _search_name_cache[key] = resolved
+        return resolved
+
+    def resolver(stub: dict) -> str:
+        parts: list[str] = []
+        nk = str(stub.get("name") or "")
+        if nk:
+            parts.append(_name(nk))
+            parts.append(nk)  # 原始键（拼音）也可搜索
+        cid = str(stub.get("id"))
+        if title_index is not None:
+            for p in title_index.periods(cid):
+                if p.name:
+                    parts.append(p.name)
+                if p.titleId:
+                    parts.append(p.titleId)
+        for field in ("dynasty", "culture", "faith", "house"):
+            v = stub.get(field)
+            if v is not None:
+                parts.append(str(v))
+        return " ".join(parts)
+
+    return resolver
+
+
 @router.get("/saves/{save_id}/characters")
 def list_characters_endpoint(
     save_id: str,
@@ -696,6 +814,14 @@ def list_characters_endpoint(
         title_index, _ = _title_index(sess, save_id)
     except (ReaderExecutionError, ReaderMissingError):
         title_index = None
+    loader = _ensure_loader(sess, save_id)
+    search_resolver = None
+    title_holder_ids = None
+    if q or title:
+        if q:
+            search_resolver = _search_text_resolver(sess, save_id, title_index, loader)
+        if title and title_index is not None:
+            title_holder_ids = title_index.holder_ids_for_title(title)
     page = _session_manager.list_characters(
         sess,
         offset=offset,
@@ -707,8 +833,9 @@ def list_characters_endpoint(
         title=title,
         sort=sort,
         ruler_ids=title_index.ruler_ids() if title_index is not None else None,
+        search_resolver=search_resolver,
+        title_holder_ids=title_holder_ids,
     )
-    loader = _loc_cache.get((save_id, sess.signature))
     items = [
         to_summary(
             it,
@@ -736,42 +863,9 @@ def character_profile_endpoint(save_id: str, character_id: str):
         raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
-    loader = _loc_cache.get((save_id, sess.signature))
-    # M3：合并 landed_titles 反解的头衔（titles + 时间线事件 + 告警）。
-    title_periods: list = []
-    title_events: list = []
-    title_warnings: list = []
-    try:
-        title_index, _ = _title_index(sess, save_id)
-    except (ReaderExecutionError, ReaderMissingError):
-        title_index = None
-    if title_index is not None:
-        title_periods = title_index.periods(character_id)
-        bits = title_index.primary_bits(character_id)
-        name_key = stub.get("name") or ""
-        display_name = (
-            loader.resolve(name_key) if (loader and name_key) else name_key
-        )
-        primary_period = None
-        if bits.primary is not None:
-            primary_period = next(
-                (
-                    p
-                    for p in title_periods
-                    if p.isCurrent and p.titleId == bits.primary.id
-                ),
-                None,
-            )
-        title_events = build_title_events(
-            character_id, display_name, title_periods, primary_period
-        )
-        title_warnings = title_index.warnings(character_id)
-    # M4：记忆索引（memories / friends / rivals / lovers / 记忆时间线事件）。
-    memory_index = None
-    try:
-        memory_index, _ = _memory_index(sess, save_id)
-    except (ReaderExecutionError, ReaderMissingError):
-        memory_index = None
+    loader, title_periods, title_events, title_warnings, memory_index = _profile_parts(
+        sess, save_id, character_id, stub
+    )
     return to_profile(
         stub,
         loader,
@@ -781,6 +875,41 @@ def character_profile_endpoint(save_id: str, character_id: str):
         by_id=sess.by_id,
         memory_index=memory_index,
     ).model_dump()
+
+
+@router.get("/local-saves/{save_id}/characters/{character_id}/timeline")
+def character_timeline_endpoint(save_id: str, character_id: str):
+    """M5 时间线：去重合并后的契约时间线 + 合并统计（不重新 melt）。
+
+    - timeline：基础（出生/逝世）+ 头衔 + 记忆事件经 TimelineBuilder 去重合并，
+      每条带 EvidenceRef（0 缺证据）；mergedCount>1 表示由多条重复存档记录合并。
+    - mergedCount：被合并（并入主事件、不再单独呈现）的记录总数。
+    """
+    _rec, sess = _ensure_session(save_id)
+    try:
+        stub = _session_manager.get_character(sess, character_id)
+    except KeyError:
+        raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+    loader, _title_periods, title_events, _title_warnings, memory_index = _profile_parts(
+        sess, save_id, character_id, stub
+    )
+    name_key = stub.get("name") or ""
+    display_name = loader.resolve(name_key) if (loader and name_key) else name_key
+    base_events, _base_warnings = _build_timeline_and_evidence(stub, display_name or name_key)
+    source_events: list = list(base_events) + list(title_events)
+    if memory_index is not None:
+        source_events += memory_index.timeline_events(character_id)
+    merged = merge_timeline(source_events)
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "eventCount": len(merged.timeline),
+        "mergedCount": merged.merged_count,
+        "mergeDetails": merged.merge_details,
+        "timeline": [e.model_dump() for e in merged.timeline],
+    }
 
 
 @router.get("/local-saves/{save_id}/characters/{character_id}/memories")
@@ -826,6 +955,7 @@ def delete_save_endpoint(save_id: str):
     _session_manager.drop_save(save_id)
     _drop_title_index(save_id)
     _drop_memory_index(save_id)
+    _drop_search_name_cache(save_id)
     if sig:
         _loc_cache.pop((save_id, sig), None)
     return {"saveId": save_id, "removed": removed}

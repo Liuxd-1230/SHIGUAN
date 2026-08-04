@@ -241,6 +241,35 @@ def test_profile_roundtrip():
     assert p2.timeline[0].evidence[0].id == "evr1"
 
 
+def test_timeline_event_merged_count_roundtrip():
+    """M5：mergedCount（>1 = 多条重复存档记录合并）在序列化往返后保留；
+    缺省/单条记录不强制填写（可选字段）。"""
+    ev = TimelineEvent(
+        id="ev_multi",
+        type=EventType.CHILD_BIRTH,
+        title="孩子出生",
+        description="双记录合并",
+        date="758.4.11",
+        confidence=Confidence.CONFIRMED,
+        evidence=[EvidenceRef(id="e1", sourceType="memory", description="d1", confidence=Confidence.CONFIRMED)],
+        mergedCount=2,
+    )
+    dumped = ev.model_dump(mode="json")
+    assert dumped["mergedCount"] == 2
+    ev2 = TimelineEvent.model_validate(dumped)
+    assert ev2.mergedCount == 2
+    # 缺省为 None（可选字段，不强制）
+    ev3 = TimelineEvent(
+        id="ev_single",
+        type=EventType.BIRTH,
+        title="诞生",
+        description="d",
+        confidence=Confidence.CONFIRMED,
+        evidence=[],
+    )
+    assert ev3.mergedCount is None
+
+
 # ---------------------------------------------------------------------------
 # 4. 合法 SaveInspection / ParsedSave 可生成 + 索引/档案分离
 # ---------------------------------------------------------------------------

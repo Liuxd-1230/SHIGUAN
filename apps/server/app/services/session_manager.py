@@ -235,11 +235,17 @@ class SessionManager:
         title: Optional[str] = None,
         sort: Optional[str] = None,
         ruler_ids: Optional[set[str]] = None,
+        search_resolver: Optional[object] = None,
+        title_holder_ids: Optional[set[str]] = None,
     ) -> dict:
         """在内存索引上做筛选 + 分页（不重新 melt）。
 
-        title 参数：占位 token 表下头衔未提取，无法按头衔过滤；接受该参数但恒为
-        “全部通过”，并在 items 中保留 title_hint=None（诚实：不伪造头衔过滤）。
+        q：M5 起默认匹配**解析后字段**（人名/头衔/王朝/文化等）。search_resolver
+        为可调用对象 `(stub: dict) -> str`，返回该人物的可搜索文本（含解析后的
+        中文名）；未提供时回退旧行为（在原始 stub JSON 上匹配，仅能命中原始 key）。
+
+        title 参数：M5 起按头衔名反查 holder（title_holder_ids = 持有该头衔的
+        人物 id 集合）；未提供时恒为“全部通过”（兼容旧调用/占位 token 表）。
 
         ruler_ids：M3 由 landed_titles 反解出的“当前持有头衔”人物 id 集合。
         提供时 ruler_only 用它判定（比仅看人物块 landed_data 更完整，含名义头衔）；
@@ -249,8 +255,13 @@ class SessionManager:
         needle = (q or "").strip().lower()
         out: list[dict] = []
         for r in recs:
-            if needle and needle not in json.dumps(r, ensure_ascii=False).lower():
-                continue
+            if needle:
+                if search_resolver is not None:
+                    hay = search_resolver(r).lower()
+                    if needle not in hay:
+                        continue
+                elif needle not in json.dumps(r, ensure_ascii=False).lower():
+                    continue
             if ruler_only:
                 if ruler_ids is not None:
                     if str(r.get("id")) not in ruler_ids:
@@ -261,7 +272,10 @@ class SessionManager:
                 continue
             if dynasty is not None and str(r.get("dynasty")) != str(dynasty):
                 continue
-            # title 过滤在占位 token 表下不可用（无数据），恒为通过（不伪造结果）。
+            # title 过滤：M5 起按持有者集合判定；未提供则恒通过（兼容）。
+            if title is not None and title_holder_ids is not None:
+                if str(r.get("id")) not in title_holder_ids:
+                    continue
             out.append(r)
         if sort == "name":
             out.sort(key=lambda r: (r.get("name") or "").lower())

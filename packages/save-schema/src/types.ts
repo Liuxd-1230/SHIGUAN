@@ -230,6 +230,8 @@ export interface TimelineEvent {
   confidence: Confidence;
   /** 可溯源的证据引用集合（至少能关联一条 EvidenceRef）。 */
   evidence: EvidenceRef[];
+  /** M5：该事件由 N 条重复存档记录合并而成（>1 表示已去重合并；缺省/1 = 单条记录）。 */
+  mergedCount?: number;
 }
 
 // ----------------------------------------------------------------------------

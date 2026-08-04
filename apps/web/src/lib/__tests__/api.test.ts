@@ -45,13 +45,17 @@ describe("api HTTP 方法（回归 405）", () => {
     expect(calls[0].method).toBe("DELETE");
   });
 
-  it("读取类端点保持 GET（inspect/mods/characters/profile）", async () => {
+  it("读取类端点保持 GET（inspect/mods/characters/profile/timeline）", async () => {
     const calls = installFetchRecorder();
     await api.inspectSave("save_1");
     await api.modsForSave("save_1");
     await api.listCharacters("save_1", { limit: 5, offset: 0 });
     await api.getProfile("save_1", "c_1");
-    expect(calls.map((c) => c.method)).toEqual(["GET", "GET", "GET", "GET"]);
+    await api.getTimeline("save_1", "c_1");
+    expect(calls.map((c) => c.method)).toEqual(["GET", "GET", "GET", "GET", "GET"]);
+    expect(calls[4].url).toContain(
+      "/api/local-saves/save_1/characters/c_1/timeline",
+    );
   });
 
   it("非 2xx 响应抛出可读错误（不吞 405）", async () => {
