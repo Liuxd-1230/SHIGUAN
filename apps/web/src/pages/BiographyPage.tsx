@@ -12,6 +12,7 @@ import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
 import MemoriesPanel from "../components/MemoriesPanel";
 import OutlinePanel from "../components/OutlinePanel";
+import BiographyPanel from "../components/BiographyPanel";
 import PortraitFrame from "../components/PortraitFrame";
 import MuseumSurface from "../components/MuseumSurface";
 import ScrollPanel from "../components/ScrollPanel";
@@ -307,6 +308,13 @@ export default function BiographyPage() {
       {isReal && characterId && (
         <div className="mt-6">
           <OutlinePanel saveId={effectiveSaveId} characterId={characterId} />
+        </div>
+      )}
+
+      {/* Phase 3B：AI 传记正文（以已生成提纲为依据，异步生成 + 事实校验） */}
+      {isReal && characterId && (
+        <div className="mt-6">
+          <BiographyPanel saveId={effectiveSaveId} characterId={characterId} />
         </div>
       )}
 

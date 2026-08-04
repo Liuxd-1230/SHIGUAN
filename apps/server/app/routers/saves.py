@@ -33,8 +33,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
 
-from models import BiographyStyle
+from models import BiographyOutline, BiographyStyle
 
+from biography_engine.biography_generator import DEFAULT_MAX_CHAPTER_REPAIR, BiographyGenerator
+from biography_engine.chapter_prompts import CHAPTER_PROMPT_VERSION
 from biography_engine.models import COMPRESSION_VERSION
 from biography_engine.outline_generator import DEFAULT_MAX_REPAIR, OutlineGenerator
 from biography_engine.prompt_builder import PROMPT_VERSION
@@ -57,6 +59,8 @@ from app.config import (
     resolve_default_saves_dir,
     resolve_game_dir,
 )
+from app.services.biography_jobs import biography_job_manager
+from app.services.biography_store import biography_store
 from app.services.character_extractor import to_profile, to_summary
 from app.services.character_extractor import _build_timeline_and_evidence
 from app.services.character_extractor import _dynasty_entity
@@ -1257,6 +1261,215 @@ def list_outlines_endpoint(
         character_id,
         current_signature=sess.signature,
         current_compression_version=COMPRESSION_VERSION,
+        limit=limit,
+    )
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "count": len(records),
+        "records": records,
+    }
+
+
+# -- Phase 3B：传记正文生成（异步任务） --------------------------------------
+class BiographyRequest(BaseModel):
+    """以已生成提纲为依据，异步生成正文。
+
+    - outlineId：outline_store 中的提纲记录 id（必须属于该存档且未 stale）。
+    - includeInferred / includeUncertain / maxEvents：与提纲生成时一致的压缩设置。
+    """
+    outlineId: int
+    includeInferred: bool = True
+    includeUncertain: bool = True
+    maxEvents: int = Field(default=24, ge=1, le=100)
+
+
+def _build_biography_worker(
+    save_id: str,
+    character_id: str,
+    session,
+    req: BiographyRequest,
+    outline_rec: dict,
+):
+    """构造后台 worker：加载人物档案 + 运行 BiographyGenerator + 落库。
+
+    返回 manager.start() 用的 dict 结果；进度通过 manager.update_progress 更新。
+    """
+    manager = biography_job_manager()
+    outline = BiographyOutline.model_validate(outline_rec["outline"])
+    outline_id = int(outline_rec["id"])
+
+    def _worker(job) -> dict:
+        # 档案加载（与提纲生成同路径：一次 melt 多次查询，不重新解析）。
+        stub = _session_manager.get_character(session, character_id)
+        loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
+            session, save_id, character_id, stub
+        )
+        profile = to_profile(
+            stub,
+            loader,
+            title_periods=title_periods,
+            title_events=title_events,
+            title_warnings=title_warnings,
+            by_id=session.by_id,
+            memory_index=memory_index,
+            resolver=resolver,
+        )
+        total = len(outline.chapters)
+        manager.update_progress(
+            job.job_id, total=total, completed=0,
+            current_index=1, current_title=outline.chapters[0].title if total else "",
+            retry_count=0, fact_check_issue_count=0,
+        )
+
+        def on_progress(completed: int, total_ch: int) -> None:
+            title = (
+                outline.chapters[completed - 1].title
+                if 1 <= completed <= total_ch
+                else ""
+            )
+            manager.update_progress(
+                job.job_id, total=total_ch, completed=completed,
+                current_index=completed, current_title=title,
+                retry_count=0, fact_check_issue_count=0,
+            )
+
+        result = BiographyGenerator(
+            provider=_current_provider(),
+            max_repair=DEFAULT_MAX_CHAPTER_REPAIR,
+        ).generate(
+            profile,
+            outline,
+            include_inferred=req.includeInferred,
+            include_uncertain=req.includeUncertain,
+            max_events=req.maxEvents,
+            on_progress=on_progress,
+            is_cancelled=lambda: manager.is_cancelled(job.job_id),
+        )
+
+        if result.biography is None:
+            return {
+                "status": "error",
+                "error_code": result.errorCode,
+                "error_message": result.errorMessage,
+                "retry_count": result.retryCount,
+                "fact_check_issue_count": 0,
+            }
+
+        record_status = (
+            "needs_revision"
+            if result.biography.factCheck is not None
+            and result.biography.factCheck.status.value == "needs_revision"
+            else "completed"
+        )
+        biography_id = uuid.uuid4().hex
+        biography_store().save_biography(
+            biography_id=biography_id,
+            save_id=save_id,
+            save_signature=session.signature,
+            character_id=character_id,
+            outline_id=outline_id,
+            status=record_status,
+            style=outline.style.value,
+            revision_count=result.retryCount,
+            biography_json=result.biography.model_dump_json(),
+            fact_check_json=(
+                result.biography.factCheck.model_dump_json()
+                if result.biography.factCheck is not None
+                else None
+            ),
+            model_name=result.biography.modelName,
+            prompt_version=CHAPTER_PROMPT_VERSION,
+            compression_version=(
+                result.compressed.compressionVersion
+                if result.compressed is not None
+                else None
+            ),
+        )
+        return {
+            "status": "completed",
+            "biography_id": biography_id,
+            "record_status": record_status,
+            "retry_count": result.retryCount,
+            "fact_check_issue_count": (
+                len(result.biography.factCheck.issues)
+                if result.biography.factCheck is not None
+                else 0
+            ),
+        }
+
+    return _worker
+
+
+@router.post("/local-saves/{save_id}/characters/{character_id}/biography")
+def generate_biography_endpoint(save_id: str, character_id: str, req: BiographyRequest):
+    """以已生成提纲为依据，异步生成传记正文。
+
+    - 立即返回 {jobId, status:"pending"}；进度经 GET /api/biography/jobs/{job_id} 查询。
+    - 提纲必须存在且基于当前存档（signature 一致 + 未 stale），否则 400。
+    - 模型不可达 / 未配置：job 以 error 结束，**不保存半成品、不伪造成功**。
+    - 完成后正文落库（data/biography-biographies.sqlite），status 区分
+      completed / needs_revision（有限修复耗尽仍存在问题时的诚实草稿）。
+    """
+    _rec, sess = _ensure_session(save_id)
+    outline_rec = outline_store().get_generation_raw(req.outlineId)
+    if outline_rec is None:
+        raise _fail(404, "outline_not_found", f"提纲记录不存在：{req.outlineId}")
+    if outline_rec.get("save_signature") != sess.signature:
+        raise _fail(
+            400,
+            "outline_stale",
+            "该提纲基于旧存档生成，请先用当前存档重新生成提纲。",
+        )
+    try:
+        stub = _session_manager.get_character(sess, character_id)
+    except KeyError:
+        raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+
+    worker = _build_biography_worker(save_id, character_id, sess, req, outline_rec)
+    job = biography_job_manager().start(
+        worker=worker, save_id=save_id, character_id=character_id
+    )
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "jobId": job.job_id,
+        "status": "pending",
+    }
+
+
+@router.get("/biography/jobs/{job_id}")
+def biography_job_status_endpoint(job_id: str):
+    """查询正文生成任务进度（pending/running/completed/error/cancelled）。"""
+    job = biography_job_manager().get(job_id)
+    if job is None:
+        raise _fail(404, "job_not_found", f"任务不存在：{job_id}")
+    return job
+
+
+@router.post("/biography/jobs/{job_id}/cancel")
+def biography_job_cancel_endpoint(job_id: str):
+    """取消正文生成任务（worker 在下一章前退出，不保存半成品）。"""
+    status = biography_job_manager().cancel(job_id)
+    if status is None:
+        raise _fail(404, "job_not_found", f"任务不存在：{job_id}")
+    return {"jobId": job_id, "cancelled": status not in ("completed", "error", "cancelled")}
+
+
+@router.get("/local-saves/{save_id}/characters/{character_id}/biographies")
+def list_biographies_endpoint(
+    save_id: str,
+    character_id: str,
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """列出该人物的正文生成记录（含 stale 标记：签名变化 → 基于旧存档）。"""
+    _rec, sess = _ensure_session(save_id)
+    records = biography_store().list_biographies(
+        save_id,
+        character_id,
+        current_signature=sess.signature,
         limit=limit,
     )
     return {

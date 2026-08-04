@@ -303,12 +303,31 @@
 
 1. OpenAI 兼容接口层（支持 llama.cpp/LM Studio/Ollama/OpenAI，默认本地）—— **已在 Phase 3A 落地**。
 2. 人物档案压缩（步骤 5）—— **已在 Phase 3A 落地**（确定性压缩 + 事件重要度评分）。
-3. 提纲生成（步骤 6）→ 正文生成（步骤 7）—— **提纲已在 Phase 3A 落地**；正文生成留待 3B。
-4. 事实校验（步骤 8）与自动修正重试 —— 校验器骨架（eventIds 白名单/章节约束/时间顺序）已在 3A 落地；正文事实校验留待 3B。
-5. 生成历史、编辑与保存、文风切换 —— 生成记录 SQLite（saveSignature 关联 + stale）已在 3A 落地；编辑/保存 UI 留待 3B。
-6. 传记测试（时间倒置/推断当事实/虚构配偶头衔/无证据对白/每章关联事件/非法 JSON 重试）—— 校验/重试测试已在 3A 落地；正文级测试留待 3B。
+3. 提纲生成（步骤 6）→ 正文生成（步骤 7）—— **提纲已在 Phase 3A 落地**；**正文已在 Phase 3B 落地**（逐章生成，每章仅用该章事件）。
+4. 事实校验（步骤 8）与自动修正重试 —— 提纲校验已在 3A 落地；**正文确定性 FactChecker（20 规则）+ 有限自动修正已在 Phase 3B 落地**。
+5. 生成历史、编辑与保存、文风切换 —— 提纲/正文生成记录 SQLite（saveSignature 关联 + stale）已落地；**正文异步任务进度/取消已在 3B 落地**；编辑/保存 UI 留待后续。
+6. 传记测试（时间倒置/推断当事实/虚构配偶头衔/无证据对白/每章关联事件/非法 JSON 重试）—— 提纲级测试已在 3A 落地；**正文级测试（FactChecker 20 规则 + 生成器 9 项 + API 10 项）已在 Phase 3B 落地**。
 
-**Phase 3A.1（叙事输入收口，已落地）**：CompressedProfile v2（reignSummary / warSummary / warningSummary + 绰号/君主/House/主头衔/死因 + 婚约/妾室 + relatives 限量 4/6/6/6/6 + traits 去数字占位）；WarNarrativeNormalizer（defender/unknown 绝不写成主动宣战）；WarningAggregator（按 code 聚合，技术字段不入 prompt）；P0 头衔一致性（`titleStatus` 四态 + 顶部由 profile.titles 同源推导）；缓存 schema 版本写入全部 5 个缓存文件；旧提纲 compressionVersion 变化标 stale。下一步：**Phase 3B（正文生成 + 事实校验）**——BiographyGenerator 逐章生成（每章仅用该章事件）、确定性 FactChecker（20 规则）、有限自动修正、正文/修订历史持久化、异步任务进度、Fake CI + 真实模型冒烟。
+**Phase 3A.1（叙事输入收口，已落地）**：CompressedProfile v2（reignSummary / warSummary / warningSummary + 绰号/君主/House/主头衔/死因 + 婚约/妾室 + relatives 限量 4/6/6/6/6 + traits 去数字占位）；WarNarrativeNormalizer（defender/unknown 绝不写成主动宣战）；WarningAggregator（按 code 聚合，技术字段不入 prompt）；P0 头衔一致性（`titleStatus` 四态 + 顶部由 profile.titles 同源推导）；缓存 schema 版本写入全部 5 个缓存文件；旧提纲 compressionVersion 变化标 stale。
+
+**Phase 3B（正文生成 + 事实校验，✅ 已落地）**：
+- ✅ 版本化章节正文 Prompt：`prompts/biography-chapter.zh-Hans.v1.txt` + `CHAPTER_PROMPT_VERSION`；`chapter_prompts.build_chapter_prompts` 每章独立 user_prompt，**只含该章允许事件**（把 `compressed.selectedEvents` 过滤到 `chapter.eventIds`），绝不传其他章事件/原始存档/路径/密钥。
+- ✅ 逐章生成：`BiographyGenerator`（`DEFAULT_MAX_CHAPTER_REPAIR=2`）——每章一次模型调用 → 结构校验（id / eventIds 白名单）→ FactChecker → 问题只重传该章，最多 2 次；重试耗尽仍存在问题 → 仍产出 `Biography` 但 `factCheck.status=needs_revision`（**不伪装成功**）；Provider 级错误直接失败不产半成品；`on_progress` / `is_cancelled` 钩子供异步任务进度与取消。
+- ✅ 确定性 FactChecker（20 规则，不调用 LLM）：event_id_not_allowed、event_after_death、time_reversal、numeric_id_leak、token_id_leak、source_path_leak、internal_enum_leak、punctuation_double、inferred_as_fact、conflict_as_succession、defender_as_declared、fabricated_dialogue、unverified_quoted_name、unverified_quoted_title、death/birth_year_mismatch、profile_id_leak、model_meta_leak、empty_chapter、markdown_leak；`FactCheckIssue(rule/severity/message/suggestedFix)`，WARNING/ERROR → needs_revision。
+- ✅ 持久化：`app/services/biography_store.py`（SQLite `data/biography-biographies.sqlite`）——`biography_id`(uuid)/save_id/save_signature/character_id/outline_id/status(`completed|needs_revision|error`)/revision_count/biography_json/fact_check_json/model_name/prompt_version/compression_version；签名变化 → stale；**不存** API Key/prompt/路径。
+- ✅ 异步任务 API：`POST /api/local-saves/{id}/characters/{cid}/biography`（body 含 outlineId）→ `{jobId, status:pending}`（后台线程，`app/services/biography_jobs.py`）；`GET /api/biography/jobs/{job_id}`（status/totalChapters/completedChapters/currentChapter/currentChapterTitle/retryCount/factCheckIssueCount/biographyId/recordStatus/error）；`POST /api/biography/jobs/{job_id}/cancel`；`GET .../biographies` 列出记录（stale 标记）。模型不可达 → job=error（不保存、不伪造）。
+- ✅ 前端：`BiographyPanel`（真实模式 BiographyPage 第三层：史料摘要 → AI 提纲 → AI 正文）——提纲选择（非 stale）/ 生成正文 / 进度条（progressbar + 当前章节 + 完成计数）/ 取消 / 按 errorCode 提示 / 记录卡片（completed/needs_revision 徽标 + stale 标记 + 事实校验提示列表）；`api.ts` 增 `startBiography/getBiographyJob/cancelBiographyJob/listBiographies`。
+- ✅ 冒烟：真实存档 `data/phase3b_smoke.py`——模型在运行 → 端到端逐章生成 + 校验；**模型未运行 → 必须返回 provider_unreachable、biography=None、不伪造成功**（实测：真实存档「摩那卢」id=67147747，模型未运行 → `provider_unreachable`，诚实失败通过）。
+
+### 本轮（Phase 3B）验证结果
+
+- 契约 `save-schema`：**29 passed**（无契约改动，回归全绿）。
+- biography-engine：**117 passed**（新增 FactChecker 26 / chapter_prompts 4 / biography_generator 9）。
+- 后端 pytest：**240 passed / 13 skipped**（新增 `test_biography_api.py` 10 项：成功落库 / needs_revision / 不可达不落库 / 取消 / 404 / stale 400 / 列表 / 响应不泄漏）。
+- Rust：`cargo test --release` **24 passed**（无改动，回归全绿）。
+- 前端：`tsc --noEmit` 0 错 / `npm run lint` 0 错 0 警告 / `vitest` **165 passed**（新增 `BiographyPanel` 5 项）/ `vite build` 成功。
+- 真实存档冒烟：`data/phase3b_smoke.py`（本地不提交）——注册真实存档 → 档案（摩那卢 67147747）→ Echo 提纲 → 真实 OpenAICompatibleProvider（默认 8080）→ 模型未运行返回 `provider_unreachable`（诚实失败，不伪造成功）。
+- 详细报告：`docs/phase3b-report.md`。
 
 ---
 

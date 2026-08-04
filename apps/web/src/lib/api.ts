@@ -163,6 +163,75 @@ export interface OutlineRecord {
   stale: boolean;
 }
 
+// -- Phase 3B：传记正文生成（异步任务 + 记录） ---------------------------------
+export interface BiographyJobData {
+  jobId: string;
+  saveId: string;
+  characterId: string;
+  status: "pending" | "running" | "completed" | "error" | "cancelled";
+  totalChapters: number;
+  completedChapters: number;
+  currentChapter: number;
+  currentChapterTitle: string;
+  retryCount: number;
+  factCheckIssueCount: number;
+  biographyId: string | null;
+  recordStatus: string | null;
+  error: { code: string; message: string } | null;
+}
+
+export interface BiographyChapterData {
+  id: string;
+  title: string;
+  content: string;
+  eventIds: string[];
+}
+
+export interface FactCheckIssueData {
+  rule: string;
+  severity: "info" | "warning" | "error";
+  message: string;
+  suggestedFix: string | null;
+}
+
+export interface FactCheckResultData {
+  status: "pass" | "needs_revision";
+  issues: FactCheckIssueData[];
+}
+
+export interface BiographyData {
+  profileId: string;
+  style: string;
+  chapters: BiographyChapterData[];
+  generatedAt: string;
+  modelName: string;
+  factCheck: FactCheckResultData | null;
+  profileDigest: string | null;
+}
+
+export interface BiographyStartParams {
+  outlineId: number;
+  includeInferred: boolean;
+  includeUncertain: boolean;
+  maxEvents: number;
+}
+
+export interface BiographyRecord {
+  id: string;
+  character_id: string;
+  outline_id: number | null;
+  style: string;
+  status: "completed" | "needs_revision" | "error";
+  revision_count: number;
+  biography: BiographyData | null;
+  factCheck: FactCheckResultData | null;
+  model_name: string | null;
+  prompt_version: string | null;
+  compression_version: string | null;
+  created_at: string;
+  stale: boolean;
+}
+
 let _available: boolean | null = null;
 
 async function _getJson(path: string, signal?: AbortSignal): Promise<unknown> {
@@ -304,6 +373,48 @@ export const api = {
       characterId: string;
       count: number;
       records: OutlineRecord[];
+    }>,
+  // -- Phase 3B --
+  startBiography: (
+    saveId: string,
+    characterId: string,
+    params: BiographyStartParams,
+    signal?: AbortSignal,
+  ) =>
+    _request(
+      "POST",
+      `/api/local-saves/${saveId}/characters/${encodeURIComponent(
+        characterId,
+      )}/biography`,
+      {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      signal,
+    ) as Promise<{
+      saveId: string;
+      characterId: string;
+      jobId: string;
+      status: string;
+    }>,
+  getBiographyJob: (jobId: string, signal?: AbortSignal) =>
+    _getJson(`/api/biography/jobs/${jobId}`, signal) as Promise<BiographyJobData>,
+  cancelBiographyJob: (jobId: string, signal?: AbortSignal) =>
+    _request("POST", `/api/biography/jobs/${jobId}/cancel`, undefined, signal) as Promise<{
+      jobId: string;
+      cancelled: boolean;
+    }>,
+  listBiographies: (saveId: string, characterId: string, signal?: AbortSignal) =>
+    _getJson(
+      `/api/local-saves/${saveId}/characters/${encodeURIComponent(
+        characterId,
+      )}/biographies`,
+      signal,
+    ) as Promise<{
+      saveId: string;
+      characterId: string;
+      count: number;
+      records: BiographyRecord[];
     }>,
 };
 

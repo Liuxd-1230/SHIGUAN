@@ -104,6 +104,27 @@ class OutlineStore:
             ).fetchone()
         return self._row_to_dict(row) if row else None
 
+    def get_generation_raw(self, record_id: int) -> Optional[dict]:
+        """原始记录（保留 save_signature 列，供正文生成做签名一致性校验）。
+
+        对外列表接口刻意剥离 save_signature（前端不需要）；生成正文时必须
+        校验提纲与当前存档同签名，故提供此原样读取入口。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM outline_generations WHERE id = ?", (record_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        cols = [
+            "id", "save_id", "save_signature", "character_id", "style", "status",
+            "outline_json", "error_code", "error_message", "retry_count",
+            "warning_json", "compression_version", "prompt_version", "created_at",
+        ]
+        rec = dict(zip(cols, row))
+        rec["outline"] = json.loads(rec.pop("outline_json")) if rec.get("outline_json") else None
+        return rec
+
     def list_generations(
         self,
         save_id: str,
