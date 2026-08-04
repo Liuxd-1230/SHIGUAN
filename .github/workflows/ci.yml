@@ -45,6 +45,13 @@ jobs:
       - name: 运行后端测试
         working-directory: apps/server
         run: python -m pytest -q
+      # Phase 3A：biography-engine（Provider 抽象 + 压缩 + 提纲生成）。
+      # 全部使用 FakeLlmProvider，不调用 OpenAI / 本地模型服务 / 下载模型。
+      - name: 运行 biography-engine 测试
+        working-directory: packages/biography-engine/py
+        env:
+          PYTHONPATH: .
+        run: python -m pytest tests/ -q
 
   # —— Rust sidecar（ck3-reader）：格式化 / clippy 视为错误 / release 构建 / 单元测试 ——
   rust:

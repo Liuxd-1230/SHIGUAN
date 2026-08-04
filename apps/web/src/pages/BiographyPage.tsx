@@ -9,6 +9,7 @@ import type { TitlePeriod } from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
 import MemoriesPanel from "../components/MemoriesPanel";
+import OutlinePanel from "../components/OutlinePanel";
 import PortraitFrame from "../components/PortraitFrame";
 import MuseumSurface from "../components/MuseumSurface";
 import ScrollPanel from "../components/ScrollPanel";
@@ -270,6 +271,13 @@ export default function BiographyPage() {
       <div className="mt-6">
         <MemoriesPanel profile={profile} />
       </div>
+
+      {/* Phase 3A：AI 传记提纲（仅真实模式；打开页面不自动生成，点按钮才调用模型） */}
+      {isReal && characterId && (
+        <div className="mt-6">
+          <OutlinePanel saveId={effectiveSaveId} characterId={characterId} />
+        </div>
+      )}
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* 时间线 + 密度控制（移动端排正文之后） */}

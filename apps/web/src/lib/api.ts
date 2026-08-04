@@ -73,6 +73,96 @@ export interface CharacterPage {
   items: CharacterSummary[];
 }
 
+// -- Phase 3A：LLM Provider 健康与传记提纲生成 --------------------------------
+export interface LlmHealth {
+  configured: boolean;
+  provider: string;
+  baseUrlRedacted: string | null;
+  model: string | null;
+  local: boolean;
+  reachable: boolean;
+  errorCode: string | null;
+  message: string | null;
+}
+
+export interface OutlineChapterData {
+  id: string;
+  title: string;
+  summary: string;
+  eventIds: string[];
+}
+
+export interface BiographyOutlineData {
+  profileId: string;
+  style: string;
+  chapters: OutlineChapterData[];
+}
+
+export interface CompressedEventData {
+  eventId: string;
+  date: string | null;
+  endDate: string | null;
+  type: string;
+  title: string;
+  factualSummary: string;
+  confidence: string;
+  relatedNames: string[];
+  evidenceCount: number;
+  mergedCount: number | null;
+}
+
+export interface CompressedProfileData {
+  profileId: string;
+  displayName: string;
+  lifeSpan: string | null;
+  identityFacts: string[];
+  familyFacts: string[];
+  titleFacts: string[];
+  relationshipFacts: string[];
+  selectedEvents: CompressedEventData[];
+  omittedEventCount: number;
+  warnings: string[];
+  unresolvedCount: number;
+  sourceEventIds: string[];
+  compressionVersion: string;
+}
+
+export interface OutlineGenerationParams {
+  style: string;
+  includeInferred: boolean;
+  includeUncertain: boolean;
+  maxEvents: number;
+}
+
+export interface OutlineGenerationResultData {
+  saveId: string;
+  characterId: string;
+  recordId: number;
+  valid: boolean;
+  retryCount: number;
+  warnings: string[];
+  outline: BiographyOutlineData | null;
+  compressed: CompressedProfileData | null;
+  error: { code: string; message: string } | null;
+  stale: boolean;
+}
+
+export interface OutlineRecord {
+  id: number;
+  character_id: string;
+  style: string;
+  status: "success" | "error";
+  outline: BiographyOutlineData | null;
+  error_code: string | null;
+  error_message: string | null;
+  retry_count: number;
+  warnings: string[] | null;
+  compression_version: string | null;
+  prompt_version: string | null;
+  created_at: string;
+  stale: boolean;
+}
+
 let _available: boolean | null = null;
 
 async function _getJson(path: string, signal?: AbortSignal): Promise<unknown> {
@@ -182,6 +272,38 @@ export const api = {
     _request("DELETE", `/api/saves/${saveId}`, undefined, signal) as Promise<{
       saveId: string;
       removed: boolean;
+    }>,
+  // -- Phase 3A --
+  getLlmHealth: (signal?: AbortSignal) =>
+    _getJson("/api/llm/health", signal) as Promise<LlmHealth>,
+  generateOutline: (
+    saveId: string,
+    characterId: string,
+    params: OutlineGenerationParams,
+    signal?: AbortSignal,
+  ) =>
+    _request(
+      "POST",
+      `/api/local-saves/${saveId}/characters/${encodeURIComponent(
+        characterId,
+      )}/biography/outline`,
+      {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      },
+      signal,
+    ) as Promise<OutlineGenerationResultData>,
+  listOutlines: (saveId: string, characterId: string, signal?: AbortSignal) =>
+    _getJson(
+      `/api/local-saves/${saveId}/characters/${encodeURIComponent(
+        characterId,
+      )}/biography/outlines`,
+      signal,
+    ) as Promise<{
+      saveId: string;
+      characterId: string;
+      count: number;
+      records: OutlineRecord[];
     }>,
 };
 

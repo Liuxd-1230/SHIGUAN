@@ -206,7 +206,7 @@ class SaveParserAdapter(Protocol):
 
 ---
 
-## 8. 当前进度（Phase 0.5 + 1A + 1B + 1C + 1C.1 + 2A + 2A.1 + 2B M1–M5，均已完成）
+## 8. 当前进度（Phase 0.5 + 1A + 1B + 1C + 1C.1 + 2A + 2A.1 + 2B M1–M5 + M5.1 + 3A，均已完成）
 
 - ✅ 目录结构（最小、非空）
 - ✅ 数据契约：`packages/save-schema/src/types.ts` + `py/models.py`，Phase 0.5 已补齐并严格同步
@@ -237,3 +237,17 @@ class SaveParserAdapter(Protocol):
 **Phase 2B M1–M5（真实人物语义深化）已完成**：M1 反推真实 token + 重写 `scan_characters_full`（三容器 44096 人物）+ 字段真值；M2 实体索引 10 类 + `ReferenceResolver` 诚实解析 + `GET /local-saves/{id}/entities`；M3 头衔与统治经历 —— Rust `scan_titles`（19003 条，`titles.json`，Format A/B 双格式）、Python `TitleReignExtractor`/`TitleProfileIndex`（5230 名现任统治者、7423 人有头衔记录、`GET /local-saves/{id}/characters/{cid}/titles`）、`CharacterProfile.titles` + `title_gain`/`title_loss`/`succession` 时间线事件（全部带 EvidenceRef）、`CharacterSummary.primaryTitle/highestTitleTier/isRuler`、真实 token 表下中文头衔（`教宗国`/`幽蓟`/`拜占庭帝国`）。M3 连带修复：M2 误删 parse 路由装饰器（补回 + 路由注册表测试）、`game_version` 整词匹配、缓存 `reader_version` 门槛 + **二进制指纹门禁**（占位/真实 token 表构建互不复用缓存）。M4 关系与记忆深化 —— Rust `scan_memories`（`memories.json`：28675 条 / 116 类型，participants 角色表 / dates / battle_location）+ `scan_characters_full` 增 6 婚姻历史字段（former_spouses/betrothed/concubine/concubinist/former_concubinists/former_concubines）、Python `MemoryTimelineIndex`（主体角色归属表 → `CharacterProfile.memories` + 时间线事件 + became_* date-pairing 推断关系 + 告警，名字经会话记录解析非裸 id）、`GET /local-saves/{id}/characters/{cid}/memories`、前端 `MemoriesPanel`（关系 chips + 记忆列表 + 空态）。详见 `docs/phase2b-m3-report.md`、`docs/phase2b-m4-report.md`。
 **Phase 2B M5（时间线去重合并 + 搜索/导入/人名中文化）已完成**：契约 `TimelineEvent.mergedCount` 双端同步 + 契约测试；`timeline_builder.py` 的 `merge_timeline` 纯函数（去重键 `(type, date, 首位 related id)`、无日期不合并、证据聚合 0 缺证据、`mergedCount=组大小`）；`to_profile` 基础/头衔/记忆三来源统一去重合并；`GET /local-saves/{id}/characters/{cid}/timeline`（返回 eventCount/mergedCount/mergeDetails/timeline）；**搜索修复**（`q` 匹配解析后字段：名字经 `loader.resolve` + 头衔名 + 王朝/文化/信仰名，模块级 LRU 缓存 name key→解析名；`title=` 按头衔名反查 holder id 集合过滤）；**loader 缺失重建**（重启/直达 URL 后名字仍中文）；**人名中文化**（loc key→本地化表 / 拼音hex `Zhongrong_4EF2_5BB9`→Unicode 解码「仲容」/ 拉丁名 `Maurizio`→游戏 `character_names_l_simp_chinese.yml`「毛里齐奥」，`names/` 子目录确认被 `**/*.yml` 覆盖）；前端 `RealParsePage`（真实后端 3 阶段：初检 inspect→Mod 报告→melt 解析，失败重试，成功落印进选择页）+ `TimelineNode` 合并徽标 + `api.getTimeline`。详见 `docs/phase2b-m5-report.md`。
 **Phase 2B M5.1（LLM 前数据完整性收口）已完成**：① 无实体锚点事件不再误合并（`_dedup_key` 无锚点返回 None，仅同 type+date+同可靠锚点才合并，新增 6 项去重安全测试）；② `CharacterRef.resolved` 双端契约（TS+Python+契约 roundtrip + mock fixtures 标注 `resolved:true`）+ 统一引用构建（`_character_ref_for`：父母/子女/兄弟姐妹/好友/宿敌/恋人 by_id+loader 解析，unresolved→原 id+resolved=False，列表按 id 去重；`memory_timeline_extractor._char_ref` 同步）；③ LLM 输入过滤 `sanitize_character_ref_for_llm`（resolved=false 且数字名不写入摘要）；④ 前端 `contractValidate` 补 CharacterRef 运行时结构校验。真实存档抽样 500 人：名字中文 58.2%、人物引用 1296 条中**纯数字占位名 0 条**、已解析 42.3%（其余为本地化未命中的内部 key，如实标 resolved=False 不伪造）。
+
+**Phase 3A（本地优先传记提纲生成管线）已完成**：新增 `packages/biography-engine/py`（与 server 同仓共享 sys.path）——
+
+- **Provider 抽象**（`providers/base.py`）：`LlmProvider` Protocol（`health` / `generate_json`）；`ProviderError` 家族六种错误码（`provider_not_configured` / `provider_unreachable` / `remote_provider_disabled` / `provider_timeout` / `invalid_model_output` / `provider_error`）。
+- **OpenAICompatibleProvider**（`providers/openai_compatible.py`）：调用 `{base_url}/chat/completions`；默认本地 `http://127.0.0.1:8080/v1`，非本地地址在 `LLM_ALLOW_REMOTE=false` 时直接拒绝；`_extract_json` 剥 code fence/前后解释文字；`redact_base_url` 只暴露 `scheme://host:port`；健康检查发最小 ping。
+- **FakeLlmProvider**（`providers/fake.py`）：脚本化（json/raw/invalid_json/timeout/unreachable/error），CI 与演示全用它。
+- **配置**（`config.py`）：仅读环境变量（不覆盖 `.env`）；`provider_config` 做类型转换与非法回退。
+- **确定性压缩**（`compressor.py` + `importance.py` + `models.py`）：`compress_profile` → `CompressedProfile`（`COMPRESSION_VERSION="1"`）；`score_event` 分解（类型/confidence/证据数/合并数/日期/最高头衔 tier 加权/未解析实体降权）；`_select_events` 强制保留出生/死亡/最高头衔事件 + 每十年阶段代表 + 名额择优，受 `max_events` 硬上限；unresolved 数字人物名不进入自然语言摘要（`llm_input_filter.sanitize_character_ref_for_llm`）。**日期必须 `_date_key` 数值比较**（复用 `title_reign_extractor`）：CK3 日期未零填充，`944.10.22` 字符串排序会排在 `944.4.20` 之前导致时间倒置。
+- **版本化 Prompt**（`prompt_builder.py` + `prompts/outline.zh-Hans.v1.txt`）：`PROMPT_VERSION="outline.zh-Hans.v1"`；user_prompt 只含压缩档案 + style + `OUTLINE_JSON_SCHEMA`，绝不泄漏绝对路径/API Key/令牌表。
+- **提纲生成**（`outline_generator.py` + `validators.py`）：`validate_outline`（章节数 1–10、章节 id 唯一、eventIds 非空且来自白名单、章节时间大致有序）；`OutlineGenerator` 原始 1 次 + 修复 `DEFAULT_MAX_REPAIR=1` 次（Provider 输出解析失败与校验失败均可触发修复；超时/不可达/未配置为终态）；非法输出不进保存。
+- **后端 API**：`GET /api/llm/health`（`routers/llm.py`，脱敏：configured/provider/baseUrlRedacted/model/local/reachable/errorCode）；`POST /api/local-saves/{id}/characters/{cid}/biography/outline` + `GET .../biography/outlines`（`routers/saves.py`）；`services/outline_store.py` SQLite 记录（`data/biography-outlines.sqlite`：save_id/save_signature/character_id/style/status/outline_json/error_*/retry_count/warnings/compression_version/prompt_version/created_at，签名变化 → `stale=true`）。
+- **前端**：`OutlinePanel`（真实模式；模型健康状态 / 文风·事件上限·推断/存疑开关 / 点「生成提纲」才调用，打开页面不自动生成 / 章节展示 / 按 errorCode 给可操作提示）；`api.ts` 增 `getLlmHealth` / `generateOutline` / `listOutlines`。
+
+详见 `docs/phase3a-report.md`。

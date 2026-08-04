@@ -215,6 +215,33 @@
 
 ---
 
+## Phase 3A —— 本地优先传记提纲生成管线（✅ 已完成）
+
+**目标**：在不引入远程模型的前提下打通"档案 → 确定性压缩 → 本地/兼容 LLM Provider → 提纲 → 校验 → 持久化"的纵向管线。
+
+完成项：
+- ✅ Provider 抽象：`biography-engine/py` 新增 `LlmProvider` Protocol（`health` / `generate_json`）+ `OpenAICompatibleProvider`（默认本地 `http://127.0.0.1:8080/v1`，远程必须 `LLM_ALLOW_REMOTE=true`，`_extract_json` 容忍 code fence/前后文字）+ `FakeLlmProvider`（脚本化：json/raw/invalid_json/timeout/unreachable/error）+ `build_provider` 工厂；结构化 `ProviderError` 家族（not_configured / unreachable / remote_disabled / timeout / invalid_model_output）。
+- ✅ Provider 配置：`biography_engine/config.py` 仅从环境变量读取（不覆盖 `.env`）；`LLM_PROVIDER / LLM_BASE_URL / LLM_MODEL / LLM_API_KEY / LLM_TIMEOUT_SECONDS / LLM_TEMPERATURE / LLM_MAX_TOKENS / LLM_ALLOW_REMOTE`；`.env.example` 同步新增（无真实 Key）。
+- ✅ `GET /api/llm/health`：只返回脱敏状态（configured / provider / baseUrlRedacted / model / local / reachable / errorCode），绝不返回 API Key / 完整 Prompt / 原始存档。
+- ✅ 确定性压缩：`compress_profile` → `CompressedProfile`（`COMPRESSION_VERSION="1"`）；`score_event` 确定性重要度（类型/confidence/证据/合并/日期/最高头衔/未解析降权）；`_select_events` 强制保留出生/死亡/最高头衔 + 阶段代表 + 名额择优；unresolved 数字名不进入自然语言摘要（`llm_input_filter`）；**修复真实 bug**：CK3 日期未零填充（`944.10.22` vs `944.4.20`）必须数值比较（`_date_key`），否则字符串排序倒置时间顺序。
+- ✅ 版本化 Prompt：`prompts/outline.zh-Hans.v1.txt` + `PROMPT_VERSION="outline.zh-Hans.v1"`；`build_outline_prompts` 只传压缩档案 + style + JSON Schema；`build_repair_prompt` 有限修复重试。
+- ✅ 提纲生成：`OutlineGenerator`（原始 1 次 + 修复 N 次，`DEFAULT_MAX_REPAIR=1`）；`validate_outline`（eventIds 白名单 / 章节 id 唯一 / 时间大致有序 / 章节数 1–10）；非法输出不进保存。
+- ✅ `POST /api/local-saves/{id}/characters/{cid}/biography/outline`：压缩 → Provider → 校验 → 重试 → SQLite 记录（`data/biography-outlines.sqlite`，`saveSignature` 关联，签名变化 → stale）；`GET .../biography/outlines` 列出记录（含 stale 标记）。
+- ✅ 前端：`BiographyPage` 真实模式新增 `OutlinePanel`（模型健康状态 / 文风·事件上限·推断/存疑开关 / 点按钮才生成，打开页面不自动调用 / 章节展示 / 按 errorCode 给可操作提示）；`api.ts` 增 `getLlmHealth` / `generateOutline` / `listOutlines`。
+- ✅ 测试：biography-engine 58 项（providers 13 / importance 10 / compressor 15 / validators 10 / prompt_builder 7 / outline_generator 11）；server 新增 `test_outline_api.py` 10 项（health / 生成成功 / 未配置 / 不可达 / 400 / 404 / stale / 响应不泄漏密钥）；前端新增 `OutlinePanel` 7 项 + `api` 3 项；CI server 作业接入 biography-engine 测试。
+
+### 本轮（Phase 3A）验证结果
+
+- 契约 `save-schema`：**28 passed**（无契约改动，回归全绿）。
+- biography-engine：**58 passed**（含日期数值排序回归测试）。
+- 后端 pytest：无真实存档 **198 passed / 13 skipped**（新增 outline API 10 项）。
+- 前端：`tsc --noEmit` 0 错 / `npm run lint` 0 错 0 警告 / `vitest` **146 passed**（新增 OutlinePanel 7 + api 3）/ `vite build` 成功。
+- 真实存档纵向验证（`data/phase3a_real_verify.py`，本地不提交）：melt 2.3s；玩家「仁赞」（id=22672）30 时间线事件 / 15 头衔；压缩 selected=24 / omitted=6 / unresolved=14（数字占位名如实计数）；Echo Fake Provider 生成提纲 **valid=True、8 章 24 事件引用、retry=0**，全程不访问真实模型服务。
+- CI：`.github/workflows/ci.yml` server 作业新增 biography-engine 测试步骤（全部 FakeLlmProvider，不调用 OpenAI / 本地模型 / 下载模型）。
+- 详细报告：`docs/phase3a-report.md`。
+
+---
+
 ### 本轮（Phase 2B M3）验证结果
 
 - Rust：`cargo fmt --all -- --check` 0 / `cargo clippy --release -- -D warnings` 0 / `cargo test --release` **16 passed**（M2 12 + M3 titles 4）/ `bash build.sh`（真实 token 表）构建成功。
@@ -274,12 +301,12 @@
 
 ## Phase 3 —— AI 传记生成
 
-1. OpenAI 兼容接口层（支持 llama.cpp/LM Studio/Ollama/OpenAI，默认本地）。
-2. 人物档案压缩（步骤 5）。
-3. 提纲生成（步骤 6）→ 正文生成（步骤 7）。
-4. 事实校验（步骤 8）与自动修正重试。
-5. 生成历史、编辑与保存、文风切换。
-6. 传记测试（时间倒置/推断当事实/虚构配偶头衔/无证据对白/每章关联事件/非法 JSON 重试）。
+1. OpenAI 兼容接口层（支持 llama.cpp/LM Studio/Ollama/OpenAI，默认本地）—— **已在 Phase 3A 落地**。
+2. 人物档案压缩（步骤 5）—— **已在 Phase 3A 落地**（确定性压缩 + 事件重要度评分）。
+3. 提纲生成（步骤 6）→ 正文生成（步骤 7）—— **提纲已在 Phase 3A 落地**；正文生成留待 3B。
+4. 事实校验（步骤 8）与自动修正重试 —— 校验器骨架（eventIds 白名单/章节约束/时间顺序）已在 3A 落地；正文事实校验留待 3B。
+5. 生成历史、编辑与保存、文风切换 —— 生成记录 SQLite（saveSignature 关联 + stale）已在 3A 落地；编辑/保存 UI 留待 3B。
+6. 传记测试（时间倒置/推断当事实/虚构配偶头衔/无证据对白/每章关联事件/非法 JSON 重试）—— 校验/重试测试已在 3A 落地；正文级测试留待 3B。
 
 ---
 

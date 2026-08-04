@@ -17,9 +17,14 @@ from pathlib import Path
 
 # 让后端能 import 到 save-schema 的 Python 契约（packages/save-schema/py/models.py）。
 # 仓库根 = apps/server/app/main.py 的 parents[3]。
+_SYS = __import__("sys")
 _SCHEMA_PY = Path(__file__).resolve().parents[3] / "packages" / "save-schema" / "py"
-if str(_SCHEMA_PY) not in __import__("sys").path:
-    __import__("sys").path.insert(0, str(_SCHEMA_PY))
+if str(_SCHEMA_PY) not in _SYS.path:
+    _SYS.path.insert(0, str(_SCHEMA_PY))
+# Phase 3A：biography-engine（Provider 抽象 + 压缩 + 提纲生成）。
+_BE_PY = Path(__file__).resolve().parents[3] / "packages" / "biography-engine" / "py"
+if str(_BE_PY) not in _SYS.path:
+    _SYS.path.insert(0, str(_BE_PY))
 
 from fastapi import FastAPI, HTTPException, Request  # noqa: E402
 from fastapi.exception_handlers import http_exception_handler  # noqa: E402
@@ -27,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402
 
 from app.config import STAGING_ROOT  # noqa: E402
-from app.routers import saves  # noqa: E402
+from app.routers import llm, saves  # noqa: E402
 
 
 def _default_cors_origins() -> list[str]:
@@ -91,3 +96,4 @@ app.add_middleware(
 )
 
 app.include_router(saves.router, prefix="/api")
+app.include_router(llm.router, prefix="/api")

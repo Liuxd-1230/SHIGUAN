@@ -2,6 +2,13 @@
 
 本文档定义从"标准人物档案"到"可发布传记"的完整生成管线，重点是如何在**不虚构**的前提下，把游戏数据写成有历史感的白话纪传体。管线对应产品规范第四节的八步，并在 Phase 3 实现。
 
+> **实现状态（Phase 3A，2026-08-03）**：步骤 5（压缩）与步骤 6（提纲）已在
+> `packages/biography-engine/py` 落地 —— 确定性压缩（`compress_profile` → `CompressedProfile`，
+> 强制保留出生/死亡/最高头衔 + 阶段代表 + `max_events` 名额择优）、事件重要度评分（`score_event`）、
+> 版本化 Prompt（`prompts/outline.zh-Hans.v1.txt`）、提纲生成 + JSON 修复有限重试（`OutlineGenerator`）、
+> 提纲校验（`validate_outline`：eventIds 白名单/章节约束/时间有序）、SQLite 生成记录。
+> 步骤 7（正文）与步骤 8（正文事实校验）留待 Phase 3B。详见 `docs/phase3a-report.md`。
+
 ---
 
 ## 0. 总原则：证据驱动，拒绝编造

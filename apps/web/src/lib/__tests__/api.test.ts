@@ -67,3 +67,49 @@ describe("api HTTP 方法（回归 405）", () => {
     await expect(api.parseSave("save_1")).rejects.toThrow(/405/);
   });
 });
+
+describe("Phase 3A API（LLM 健康 + 提纲生成）", () => {
+  it("getLlmHealth 使用 GET /api/llm/health", async () => {
+    const calls = installFetchRecorder();
+    await api.getLlmHealth();
+    expect(calls[0].url).toContain("/api/llm/health");
+    expect(calls[0].method).toBe("GET");
+  });
+
+  it("generateOutline 使用 POST 且携带 JSON 请求体", async () => {
+    const calls: { url: string; method: string; init?: RequestInit }[] = [];
+    globalThis.fetch = vi.fn(async (input: unknown, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method ?? "GET", init });
+      return jsonResponse({});
+    }) as any;
+    await api.generateOutline("save_1", "c_1", {
+      style: "cold_historian",
+      includeInferred: true,
+      includeUncertain: false,
+      maxEvents: 32,
+    });
+    expect(calls[0].url).toContain(
+      "/api/local-saves/save_1/characters/c_1/biography/outline",
+    );
+    expect(calls[0].method).toBe("POST");
+    const body = JSON.parse(String(calls[0].init?.body));
+    expect(body).toEqual({
+      style: "cold_historian",
+      includeInferred: true,
+      includeUncertain: false,
+      maxEvents: 32,
+    });
+    expect((calls[0].init?.headers as Record<string, string>)["Content-Type"]).toBe(
+      "application/json",
+    );
+  });
+
+  it("listOutlines 使用 GET /biography/outlines", async () => {
+    const calls = installFetchRecorder();
+    await api.listOutlines("save_1", "c_1");
+    expect(calls[0].url).toContain(
+      "/api/local-saves/save_1/characters/c_1/biography/outlines",
+    );
+    expect(calls[0].method).toBe("GET");
+  });
+});

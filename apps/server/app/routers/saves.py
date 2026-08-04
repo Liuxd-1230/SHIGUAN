@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -30,7 +31,14 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from models import BiographyStyle
+
+from biography_engine.outline_generator import DEFAULT_MAX_REPAIR, OutlineGenerator
+from biography_engine.prompt_builder import PROMPT_VERSION
+from biography_engine.providers.base import ProviderNotConfiguredError
+from biography_engine.providers.factory import build_provider
 
 from app.adapters.ck3_reader_adapter import (
     Ck3ReaderAdapter,
@@ -59,6 +67,7 @@ from app.services.localization import LocalizationLoader
 from app.services.memory_timeline_extractor import MemoryTimelineIndex
 from app.services.mod_resolver import ModResolver, read_launcher_playset
 from app.services.entity_index_builder import EntityIndexBuilder, ReferenceResolver
+from app.services.outline_store import outline_store
 from app.services.save_registry import SaveRegistry, SaveStillWritingError
 from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
@@ -943,6 +952,153 @@ def character_memories_endpoint(save_id: str, character_id: str):
         },
         "warnings": scanner_warnings
         + [w.model_dump() for w in index.warnings(character_id)],
+    }
+
+
+# -- Phase 3A：传记提纲生成 -----------------------------------------------------
+class OutlineRequest(BaseModel):
+    style: str = "serious_biography"
+    includeInferred: bool = True
+    includeUncertain: bool = True
+    maxEvents: int = Field(default=24, ge=1, le=100)
+
+
+def _current_provider():
+    """按当前环境构建 LlmProvider；未配置 / 未知 provider → None。
+
+    None 时生成流程返回 provider_not_configured（前端可提示用户配置 .env）。
+    配置读取发生在模块级 .env 已加载之后（app.config._load_dotenv 于启动时执行）。
+    """
+    try:
+        return build_provider()
+    except ProviderNotConfiguredError:
+        return None
+
+
+@router.post("/local-saves/{save_id}/characters/{character_id}/biography/outline")
+def generate_outline_endpoint(save_id: str, character_id: str, req: OutlineRequest):
+    """生成人物传记提纲（压缩 → Provider → 校验 → 有限修复重试）。
+
+    - 只读存档缓存，不重新 melt；绝不把完整存档/原始人物库发给模型。
+    - 生成记录写入 SQLite（data/biography-outlines.sqlite，saveSignature 关联）。
+    - 未配置模型时返回结构化错误（不伪造成功）。
+    """
+    _rec, sess = _ensure_session(save_id)
+    try:
+        stub = _session_manager.get_character(sess, character_id)
+    except KeyError:
+        raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+
+    try:
+        style = BiographyStyle(req.style)
+    except ValueError:
+        raise _fail(400, "invalid_style", f"非法 BiographyStyle：{req.style}")
+
+    loader, title_periods, title_events, title_warnings, memory_index = _profile_parts(
+        sess, save_id, character_id, stub
+    )
+    profile = to_profile(
+        stub,
+        loader,
+        title_periods=title_periods,
+        title_events=title_events,
+        title_warnings=title_warnings,
+        by_id=sess.by_id,
+        memory_index=memory_index,
+    )
+
+    provider = _current_provider()
+    result = OutlineGenerator(provider=provider, max_repair=DEFAULT_MAX_REPAIR).generate(
+        profile,
+        style=style,
+        include_inferred=req.includeInferred,
+        include_uncertain=req.includeUncertain,
+        max_events=req.maxEvents,
+    )
+
+    warnings = result.warnings or []
+    if result.valid:
+        outline_json = result.outline.model_dump_json()
+        record_id = outline_store().save_generation(
+            save_id=save_id,
+            save_signature=sess.signature,
+            character_id=character_id,
+            style=style.value,
+            status="success",
+            outline_json=outline_json,
+            retry_count=result.retryCount,
+            warning_json=json.dumps(warnings, ensure_ascii=False),
+            compression_version=(
+                result.compressed.compressionVersion if result.compressed else None
+            ),
+            prompt_version=PROMPT_VERSION,
+        )
+        return {
+            "saveId": save_id,
+            "characterId": character_id,
+            "recordId": record_id,
+            "valid": True,
+            "retryCount": result.retryCount,
+            "warnings": warnings,
+            "outline": result.outline.model_dump(),
+            "compressed": (
+                result.compressed.model_dump() if result.compressed is not None else None
+            ),
+            "stale": False,
+        }
+
+    record_id = outline_store().save_generation(
+        save_id=save_id,
+        save_signature=sess.signature,
+        character_id=character_id,
+        style=style.value,
+        status="error",
+        error_code=result.errorCode,
+        error_message=result.errorMessage,
+        retry_count=result.retryCount,
+        warning_json=json.dumps(warnings, ensure_ascii=False),
+        compression_version=(
+            result.compressed.compressionVersion if result.compressed else None
+        ),
+        prompt_version=PROMPT_VERSION,
+    )
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "recordId": record_id,
+        "valid": False,
+        "retryCount": result.retryCount,
+        "warnings": warnings,
+        "outline": None,
+        "compressed": (
+            result.compressed.model_dump() if result.compressed is not None else None
+        ),
+        "error": {"code": result.errorCode, "message": result.errorMessage},
+        "stale": False,
+    }
+
+
+@router.get("/local-saves/{save_id}/characters/{character_id}/biography/outlines")
+def list_outlines_endpoint(
+    save_id: str,
+    character_id: str,
+    limit: int = Query(default=10, ge=1, le=50),
+):
+    """列出该人物的提纲生成记录（含 stale 标记：签名变化 → 基于旧存档）。"""
+    _rec, sess = _ensure_session(save_id)
+    records = outline_store().list_generations(
+        save_id,
+        character_id,
+        current_signature=sess.signature,
+        limit=limit,
+    )
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "count": len(records),
+        "records": records,
     }
 
 
