@@ -62,6 +62,7 @@ from models import (  # noqa: E402
     Sex,
     TitlePeriod,
     TitleTier,
+    TitleStatus,
     TimelineEvent,
     TokenCompatibility,
     TokenSourceInfo,
@@ -175,6 +176,22 @@ def test_invalid_factcheck_status_rejected():
 def test_valid_factcheck_status_accepted():
     fr = FactCheckResult(status=FactCheckStatus.PASS)
     assert fr.status == FactCheckStatus.PASS
+
+
+def test_title_status_enum_values_and_roundtrip():
+    """P0：TitleStatus 四个值可序列化往返，非法值被拒绝。"""
+    for v in (
+        TitleStatus.RESOLVED,
+        TitleStatus.NO_TITLES,
+        TitleStatus.TIER_UNKNOWN,
+        TitleStatus.INDEX_UNAVAILABLE,
+    ):
+        data = CharacterSummary(id="c1", name="甲", isRuler=True, titleStatus=v)
+        dumped = data.model_dump()
+        assert dumped["titleStatus"] == v.value
+        assert CharacterSummary(**dumped).titleStatus == v
+    with pytest.raises(ValidationError):
+        CharacterSummary(id="c1", name="甲", isRuler=False, titleStatus="holding_titles")
 
 
 def test_invalid_encoding_rejected():

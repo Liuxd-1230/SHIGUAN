@@ -332,6 +332,8 @@ export interface CharacterSummary {
   primaryTitle?: EntityRef;
   highestTitleTier?: TitleTier;
   isRuler: boolean;
+  /** P0：主头衔判定状态。与 CharacterProfile.titles 同源（后端 primary_bits 反解）。 */
+  titleStatus?: TitleStatus;
   isAlive: boolean;
   isPlayerDynasty: boolean;
   portraitKey?: string;
@@ -392,6 +394,19 @@ export interface FactCheckResult {
   status: "pass" | "needs_revision";
   issues: FactCheckIssue[];
 }
+
+/**
+ * 人物主头衔判定状态（P0：顶部头衔与 titles 列表同源后区分三种诚实降级）。
+ * - resolved：有现任头衔且主头衔可确定；
+ * - no_titles：确认无现任头衔（titles 列表为空）；
+ * - tier_unknown：持有现任头衔但等级未知，主头衔无法可靠判定；
+ * - index_unavailable：头衔索引不可用，无法判定（不伪造）。
+ */
+export type TitleStatus =
+  | "resolved"
+  | "no_titles"
+  | "tier_unknown"
+  | "index_unavailable";
 
 /** 完整传记产物。 */
 export interface Biography {

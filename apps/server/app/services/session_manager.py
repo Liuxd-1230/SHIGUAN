@@ -22,6 +22,10 @@ from typing import Optional
 from app.adapters.ck3_reader_adapter import Ck3ReaderAdapter
 from app.services.save_registry import SaveStillWritingError
 
+# Phase 3A.1：cache schema 版本（与 Rust 侧 CACHE_SCHEMA_VERSION 保持一致）。
+# 扫描/提取行为变更时递增，旧缓存（无此字段或值不匹配）自动失效重建。
+CACHE_SCHEMA_VERSION = "2"
+
 
 @dataclass
 class ParseSession:
@@ -157,6 +161,24 @@ class SessionManager:
             return False
         if not meta.get("reader_version"):
             return False
+        # Phase 3A.1：cache schema 版本显式化。Rust 侧 CACHE_SCHEMA_VERSION 递增时，
+        # 旧缓存（无此字段或值不匹配）必须失效重建，防止扫描/提取行为变更后被复用。
+        # 5 个缓存文件（meta/manifest/entities/titles/memories）都必须带同一版本，
+        # 任一文件缺失/版本不一致即整体失效重建，杜绝部分新旧的混合复用。
+        required_files = (
+            "meta.json",
+            "manifest.json",
+            "entities.json",
+            "titles.json",
+            "memories.json",
+        )
+        for name in required_files:
+            try:
+                doc = json.loads((cache_dir / name).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return False
+            if doc.get("cache_schema_version") != CACHE_SCHEMA_VERSION:
+                return False
         # M3.2：同一份 reader 二进制（含同一 token 表构建）产生的缓存才可复用。
         return self._cache_marker_valid()
 

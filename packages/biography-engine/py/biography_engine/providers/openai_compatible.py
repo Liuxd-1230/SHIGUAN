@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import http.client
 import json
 import urllib.error
 import urllib.parse
@@ -173,6 +174,12 @@ class OpenAICompatibleProvider:
                 raise ProviderTimeoutError() from e
             raise ProviderUnreachableError(
                 f"无法连接模型服务：{getattr(reason, 'strerror', None) or reason or e}"
+            ) from e
+        except http.client.HTTPException as e:
+            # 服务器在响应完成前断开连接（RemoteDisconnected / BadStatusLine 等），
+            # 不是 URLError 子类，必须显式包装为不可达，否则 health() 会裸抛。
+            raise ProviderUnreachableError(
+                f"连接模型服务时连接被断开：{e}"
             ) from e
         except TimeoutError as e:
             raise ProviderTimeoutError() from e

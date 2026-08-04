@@ -564,9 +564,11 @@ def test_list_summary_merges_title_bits(client, tmp_path):
     assert alice["primaryTitle"]["name"] == "阿尔法公国"
     assert alice["highestTitleTier"] == "duchy"
     assert alice["isRuler"] is True
+    assert alice["titleStatus"] == "resolved"
     bob = items["2"]
     assert bob["primaryTitle"] is None
     assert bob["isRuler"] is False  # 仅有历史任期，非现任
+    assert bob["titleStatus"] == "no_titles"  # P0：与 titles 列表同源，确认无现任头衔
 
 
 def test_ruler_only_filter_uses_title_holders(client, tmp_path):

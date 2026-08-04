@@ -8,14 +8,16 @@ function lifeSpan(birth?: string, death?: string, alive?: boolean): string {
   return `${b} – ${d}`;
 }
 
-/** 主头衔文案：未解析（resolved=false）时如实标出，不伪装成可读名。 */
+/** 主头衔文案：区分「确认无头衔 / 持有头衔但未能确定 / 索引不可用」，不误显示为无头衔。 */
 function primaryTitleText(summary: CharacterSummary): string {
   const t = summary.primaryTitle;
-  if (!t) return "无头衔";
-  if (t.resolved === false) {
-    return `${t.name}（未解析）`;
+  const status = summary.titleStatus;
+  if (status === "tier_unknown") return "持有头衔，主头衔未能确定";
+  if (status === "index_unavailable") return "头衔索引不可用";
+  if (t) {
+    return t.resolved === false ? `${t.name}（未解析）` : t.name;
   }
-  return t.name;
+  return "无头衔";
 }
 
 export default function CharacterCard({

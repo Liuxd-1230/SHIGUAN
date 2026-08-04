@@ -107,19 +107,24 @@ export default function EvidencePanel({
         </div>
       )}
 
-      {/* 人物全局告警（与当前事件无关） */}
+      {/* 人物全局告警（与当前事件无关；3A.1 按 code 聚合展示，避免同型告警刷屏） */}
       {globalWarnings.length > 0 && (
         <div className="mt-5">
           <h3 className="text-sm font-medium text-ink-500">
             人物全局告警（{globalWarnings.length}）
           </h3>
           <ul className="mt-2 space-y-2">
-            {globalWarnings.map((w, i) => (
+            {aggregateByCode(globalWarnings).map((g, i) => (
               <li
                 key={`g${i}`}
                 className="rounded-lg border border-ink-400/40 bg-paper-50/70 p-3 text-sm text-ink-700"
               >
-                <span className="text-ink-500">[{w.severity}]</span> {w.message}
+                <span className="text-ink-500">[{g.severity}]</span> {g.message}
+                {g.count > 1 && (
+                  <span className="ml-2 text-[11px] text-ink-400">
+                    同类告警 × {g.count}
+                  </span>
+                )}
               </li>
             ))}
           </ul>
@@ -127,4 +132,28 @@ export default function EvidencePanel({
       )}
     </div>
   );
+}
+
+/** 3A.1：同 code 告警聚合为一条（保留首条消息与最高严重度），避免同型告警刷屏。 */
+function aggregateByCode(warnings: EvidenceWarning[]): Array<{
+  severity: string;
+  message: string;
+  count: number;
+}> {
+  const groups = new Map<string, EvidenceWarning[]>();
+  for (const w of warnings) {
+    const arr = groups.get(w.code) ?? [];
+    arr.push(w);
+    groups.set(w.code, arr);
+  }
+  const severityRank: Record<string, number> = { warning: 2, info: 1, error: 3 };
+  return [...groups.entries()].map(([, ws]) => {
+    let worst = ws[0];
+    for (const w of ws) {
+      if ((severityRank[w.severity] ?? 0) > (severityRank[worst.severity] ?? 0)) {
+        worst = w;
+      }
+    }
+    return { severity: worst.severity, message: worst.message, count: ws.length };
+  });
 }

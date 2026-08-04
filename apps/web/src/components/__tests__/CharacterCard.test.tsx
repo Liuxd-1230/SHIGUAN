@@ -35,6 +35,26 @@ describe("CharacterCard（M3 主头衔展示）", () => {
     expect(screen.getByText("无头衔")).toBeTruthy();
   });
 
+  it("持有头衔但等级未知 → 「持有头衔，主头衔未能确定」（非无头衔）", () => {
+    render(
+      <CharacterCard
+        summary={makeSummary({ primaryTitle: undefined, titleStatus: "tier_unknown" })}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("持有头衔，主头衔未能确定")).toBeTruthy();
+  });
+
+  it("头衔索引不可用 → 「头衔索引不可用」（不伪造无头衔）", () => {
+    render(
+      <CharacterCard
+        summary={makeSummary({ primaryTitle: undefined, titleStatus: "index_unavailable" })}
+        onClick={() => {}}
+      />,
+    );
+    expect(screen.getByText("头衔索引不可用")).toBeTruthy();
+  });
+
   it("未解析头衔（resolved=false）标注（未解析）", () => {
     render(
       <CharacterCard

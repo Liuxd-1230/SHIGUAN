@@ -13,8 +13,8 @@ from models import BiographyStyle
 
 from .models import CompressedProfile
 
-PROMPT_VERSION = "outline.zh-Hans.v1"
-_PROMPT_RESOURCE = "prompts/outline.zh-Hans.v1.txt"
+PROMPT_VERSION = "outline.zh-Hans.v2"
+_PROMPT_RESOURCE = "prompts/outline.zh-Hans.v2.txt"
 
 _STYLE_LABELS = {
     BiographyStyle.VERNACULAR_ANNALS: "白话编年体（平实叙述一生大事，按时间顺序）",
@@ -91,6 +91,43 @@ def _events_block(events) -> str:
     return "\n".join(lines)
 
 
+def _relative_block(relatives) -> str:
+    if not relatives:
+        return "## 扩展亲属（无）"
+    lines = ["## 扩展亲属（按分类，全部为推断）"]
+    for r in relatives:
+        lines.append(f"- {r.relationLabel}：{r.name}（{r.relation}）")
+    return "\n".join(lines)
+
+
+def _identity_extra_block(compressed: CompressedProfile) -> str:
+    """v2 身份补充块：绰号 / 家族 / 逝世原因 / 特质。"""
+    lines: list[str] = []
+    if compressed.nickname:
+        lines.append(f"- 绰号：{compressed.nickname}")
+    if compressed.house:
+        lines.append(f"- 家族：{compressed.house}")
+    if compressed.deathReason:
+        lines.append(f"- 逝世原因：{compressed.deathReason}")
+    if compressed.traits:
+        lines.append(f"- 特质：{'、'.join(compressed.traits)}")
+    if not lines:
+        return ""
+    return "## 身份补充\n" + "\n".join(lines)
+
+
+def _summary_blocks(compressed: CompressedProfile) -> list[str]:
+    """3A.1 叙事摘要块：统治 / 战争 / 告警（确定性整理，非 AI，不含技术字段）。"""
+    parts: list[str] = []
+    if compressed.reignSummary:
+        parts.append("## 统治\n" + compressed.reignSummary)
+    if compressed.warSummary:
+        parts.append("## 战争\n" + "\n".join(f"- {s}" for s in compressed.warSummary))
+    if compressed.warningSummary:
+        parts.append("## 证据告警（已按类型聚合）\n" + "\n".join(f"- {s}" for s in compressed.warningSummary))
+    return parts
+
+
 def build_outline_prompts(
     compressed: CompressedProfile,
     style: BiographyStyle,
@@ -102,15 +139,19 @@ def build_outline_prompts(
         f"人物：{compressed.displayName}（id={compressed.profileId}）",
         f"生卒：{compressed.lifeSpan or '未知'}",
         _fact_block("身份", compressed.identityFacts),
+        _identity_extra_block(compressed),
         _fact_block("家庭", compressed.familyFacts),
         _fact_block("头衔", compressed.titleFacts),
         _fact_block("关系", compressed.relationshipFacts),
+        _relative_block(compressed.relatives),
+        *_summary_blocks(compressed),
         _events_block(compressed.selectedEvents),
         "",
         f"# 生成要求",
         f"文风：{style.value}（{style_label}）",
         f"章节数：{MIN_CHAPTERS}–{MAX_CHAPTERS} 章",
         "每章 eventIds 必须非空且全部来自上面「事件（id 列表）」中的 id。",
+        "扩展亲属均为推断：正文中只能以「据推断」方式提及，不得断言为确定事实。",
         "必须输出符合 JSON Schema 的 JSON，schema 如下：",
         json.dumps(OUTLINE_JSON_SCHEMA, ensure_ascii=False, indent=2),
     ]

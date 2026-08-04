@@ -179,9 +179,9 @@ describe("BiographyPage（按需取档 / 双向联动 / 无障碍 / 动效边界
     await renderAt("/characters/arnulf_001");
     // 先出现按需加载态（仅当该人物未在缓存时取档）
     expect(screen.getByText(/正在载入「arnulf_001」/)).toBeInTheDocument();
-    // 档案就绪后展示姓名与"传记"小节
+    // 档案就绪后展示姓名与"史料摘要"小节（3A.1：确定性史料摘要，非 AI 正文）
     expect(await screen.findByText("阿努尔夫")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "传记" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "史料摘要" })).toBeInTheDocument();
   });
 
   it("2) 索引中不存在的人物：给出未找到提示，且不发起取档", async () => {

@@ -8,7 +8,7 @@
 """
 from .compressor import compress_profile
 from .config import provider_config
-from .models import COMPRESSION_VERSION, CompressedEvent, CompressedProfile
+from .models import COMPRESSION_VERSION, CompressedEvent, CompressedProfile, CompressedRelative
 from .outline_generator import DEFAULT_MAX_REPAIR, OutlineGenerationResult, OutlineGenerator
 from .prompt_builder import PROMPT_VERSION
 from .validators import validate_outline
@@ -17,6 +17,7 @@ __all__ = [
     "COMPRESSION_VERSION",
     "CompressedEvent",
     "CompressedProfile",
+    "CompressedRelative",
     "DEFAULT_MAX_REPAIR",
     "OutlineGenerationResult",
     "OutlineGenerator",

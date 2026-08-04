@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 
 from models import BiographyStyle
 
+from biography_engine.models import COMPRESSION_VERSION
 from biography_engine.outline_generator import DEFAULT_MAX_REPAIR, OutlineGenerator
 from biography_engine.prompt_builder import PROMPT_VERSION
 from biography_engine.providers.base import ProviderNotConfiguredError
@@ -1255,6 +1256,7 @@ def list_outlines_endpoint(
         save_id,
         character_id,
         current_signature=sess.signature,
+        current_compression_version=COMPRESSION_VERSION,
         limit=limit,
     )
     return {

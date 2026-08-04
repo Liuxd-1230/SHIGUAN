@@ -30,6 +30,7 @@ from models import (
     Sex,
     TimelineEvent,
     TitlePeriod,
+    TitleStatus,
     TraitRecord,
     WarningSeverity,
 )
@@ -578,6 +579,17 @@ def to_summary(
         # 人物块的 landed_data 判定；头衔相关告警计入 evidenceWarningCount。
         is_ruler = is_ruler or title_bits.isRuler
         warn_count += title_bits.warningCount
+    # P0：主头衔判定状态与 titles 列表同源（都由 TitleProfileIndex.primary_bits 反解）。
+    # 前端据此区分「确认无头衔 / 持有头衔但未能确定主头衔 / 索引不可用」，
+    # 避免把索引不可用或 tier 未知误显示为「无头衔」。
+    if title_bits is None:
+        title_status = TitleStatus.INDEX_UNAVAILABLE
+    elif title_bits.primary is not None:
+        title_status = TitleStatus.RESOLVED
+    elif is_ruler:
+        title_status = TitleStatus.TIER_UNKNOWN
+    else:
+        title_status = TitleStatus.NO_TITLES
     return CharacterSummary(
         id=str(stub.get("id")),
         name=name or name_key,
@@ -593,6 +605,7 @@ def to_summary(
         primaryTitle=title_bits.primary if title_bits is not None else None,
         highestTitleTier=title_bits.highestTier if title_bits is not None else None,
         isRuler=is_ruler,
+        titleStatus=title_status,
         isAlive=bool(stub.get("alive", True)),
         isPlayerDynasty=False,
         evidenceWarningCount=warn_count,
@@ -774,6 +787,8 @@ def to_profile(
         sex=_sex_of(stub),
         birthDate=stub.get("birth"),
         deathDate=None if alive else death,
+        # 3A.1：死因键（dead_data.reason，未本地化时保留原键）纳入档案供压缩展示。
+        deathReason=None if alive else stub.get("death_reason"),
         dynasty=_dynasty_entity(stub.get("dynasty"), loader, resolver),
         culture=_entity(stub.get("culture"), "culture", loader, resolver),
         faith=_entity(stub.get("faith"), "faith", loader, resolver),

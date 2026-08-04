@@ -61,6 +61,12 @@ def make_profile(
     friends: list[CharacterRef] | None = None,
     birthDate: str | None = "700.1.1",
     deathDate: str | None = "780.6.6",
+    nickname: EntityRef | None = None,
+    house: EntityRef | None = None,
+    liege: CharacterRef | None = None,
+    deathReason: str | None = None,
+    traits: list | None = None,
+    relatives: list[CharacterRef] | None = None,
 ) -> CharacterProfile:
     return CharacterProfile(
         id=pid,
@@ -73,6 +79,12 @@ def make_profile(
         siblings=siblings or [],
         friends=friends or [],
         timeline=timeline or [],
+        nickname=nickname,
+        house=house,
+        liege=liege,
+        deathReason=deathReason,
+        traits=traits or [],
+        relatives=relatives or [],
     )
 
 

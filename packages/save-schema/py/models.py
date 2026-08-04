@@ -125,6 +125,18 @@ class FactCheckStatus(str, Enum):
     NEEDS_REVISION = "needs_revision"
 
 
+class TitleStatus(str, Enum):
+    """人物主头衔判定状态（P0：顶部头衔与 titles 列表同源后区分三种诚实降级）。
+
+    前端据此区分「确认无头衔 / 持有头衔但主头衔未能确定 / 索引不可用」，
+    不再把索引不可用误显示为「无头衔」。
+    """
+    RESOLVED = "resolved"              # 有现任头衔且主头衔可确定
+    NO_TITLES = "no_titles"            # 确认无现任头衔（titles 列表为空）
+    TIER_UNKNOWN = "tier_unknown"      # 持有现任头衔但等级未知，主头衔无法可靠判定
+    INDEX_UNAVAILABLE = "index_unavailable"  # 头衔索引不可用，无法判定（不伪造）
+
+
 class EntityKind(str, Enum):
     """实体类别，共 10 类，与 Rust scan_entities 的 EKind 一一对应。"""
     TRAIT = "trait"
@@ -389,6 +401,10 @@ class CharacterSummary(BaseModel):
     primaryTitle: Optional[EntityRef] = None
     highestTitleTier: Optional[TitleTier] = None
     isRuler: bool = False
+    # P0：主头衔判定状态（resolved / no_titles / tier_unknown / index_unavailable）。
+    # 与 CharacterProfile.titles 同源（都由 TitleProfileIndex.primary_bits 反解），
+    # 前端据此区分「确认无头衔 / 未能确定 / 索引不可用」，不误显示为无头衔。
+    titleStatus: Optional[TitleStatus] = None
     isAlive: bool = True
     isPlayerDynasty: bool = False
     portraitKey: Optional[str] = None

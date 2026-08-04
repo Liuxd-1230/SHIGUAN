@@ -77,4 +77,20 @@ describe("EvidencePanel（当前事件告警 / 全局告警分离）", () => {
     render(<EvidencePanel warnings={warnings} />);
     expect(screen.getByText(/在时间线中选择一个事件/)).toBeInTheDocument();
   });
+
+  it("3A.1：同 code 全局告警聚合为一条并标计数", () => {
+    const dup = [
+      { code: "title_holder_conflict", message: "头衔冲突甲", severity: "warning" },
+      { code: "title_holder_conflict", message: "头衔冲突乙", severity: "warning" },
+      { code: "unresolved_birth", message: "出生日期缺失", severity: "warning" },
+    ] as EvidenceWarning[];
+    render(<EvidencePanel event={ev1} warnings={dup} />);
+    const globalSection = screen
+      .getByText(/人物全局告警/)
+      .closest("div") as HTMLElement;
+    // 两条同 code → 一条带计数；另一条独立。
+    expect(within(globalSection).getByText("头衔冲突甲")).toBeInTheDocument();
+    expect(within(globalSection).getByText("同类告警 × 2")).toBeInTheDocument();
+    expect(within(globalSection).getByText("出生日期缺失")).toBeInTheDocument();
+  });
 });

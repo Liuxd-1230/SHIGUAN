@@ -51,6 +51,9 @@ use serde::Serialize;
 // - 用占位表（tokens/ck3_tokens.txt）构建时，输出 tXXXX。
 // 两种构建产物都能被同一套扫描逻辑解析。
 const ROOT: &[&str] = &["meta_data", "t3155"];
+// 缓存 schema 版本：Python 侧 _cache_valid 要求 meta.json 的 cache_schema_version
+// 与之一致。扫描/提取逻辑或 melt 行为变更时递增，强制旧缓存失效重建（防交叉复用）。
+const CACHE_SCHEMA_VERSION: &str = "2";
 const K_SAVE_VERSION: &[&str] = &["save_game_version", "t058f"];
 const K_GAME_VERSION: &[&str] = &["version", "t00ee"];
 const K_DATE: &[&str] = &["meta_date", "t3157"];
@@ -249,6 +252,9 @@ struct InspectOutput {
     /// 写缓存的 reader 版本：Python 侧 _cache_valid 要求存在，
     /// 旧版（无此字段）缓存在升级后自动失效重建。
     reader_version: String,
+    /// 缓存 schema 版本：Python 侧 _cache_valid 要求与 CACHE_SCHEMA_VERSION 一致，
+    /// 防止扫描/提取行为变更后旧缓存被复用。
+    cache_schema_version: String,
 }
 
 /// 单人物在缓存 / melt 明文中的完整记录（Phase 2B M1 重写）。
@@ -1163,6 +1169,9 @@ struct EntityKindIndex {
 struct EntitiesOutput {
     schema_version: u32,
     reader_version: String,
+    /// 缓存 schema 版本（CACHE_SCHEMA_VERSION）：Python 侧 _cache_valid 校验，
+    /// 防止扫描/提取行为变更后旧缓存被复用。
+    cache_schema_version: String,
     /// 扫描耗时，便于评估 prepare 的额外开销。
     scan_ms: f64,
     kinds: BTreeMap<String, EntityKindIndex>,
@@ -1315,6 +1324,8 @@ struct TitleEntry {
 struct TitlesOutput {
     schema_version: u32,
     reader_version: String,
+    /// 缓存 schema 版本（CACHE_SCHEMA_VERSION）：Python 侧 _cache_valid 校验。
+    cache_schema_version: String,
     scan_ms: f64,
     title_count: usize,
     titles: Vec<TitleEntry>,
@@ -1656,6 +1667,7 @@ fn scan_titles(text: &str) -> TitlesOutput {
     TitlesOutput {
         schema_version: 1,
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
         scan_ms,
         title_count: titles.len(),
         titles,
@@ -1694,6 +1706,8 @@ struct MemoryEntry {
 struct MemoriesOutput {
     schema_version: u32,
     reader_version: String,
+    /// 缓存 schema 版本（CACHE_SCHEMA_VERSION）：Python 侧 _cache_valid 校验。
+    cache_schema_version: String,
     scan_ms: f64,
     memory_count: usize,
     memories: Vec<MemoryEntry>,
@@ -1906,6 +1920,7 @@ fn scan_memories(text: &str) -> MemoriesOutput {
     MemoriesOutput {
         schema_version: 1,
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
         scan_ms,
         memory_count: memories.len(),
         memories,
@@ -2235,6 +2250,7 @@ fn build_entities_output(acc: EntityAcc, scan_ms: f64) -> EntitiesOutput {
     EntitiesOutput {
         schema_version: 1,
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
         scan_ms,
         kinds,
         warnings,
@@ -2288,6 +2304,8 @@ struct Manifest {
     save_version: Option<String>,
     created_at: String,
     reader_version: String,
+    /// 缓存 schema 版本（CACHE_SCHEMA_VERSION）：Python 侧 _cache_valid 校验。
+    cache_schema_version: String,
     melted_bytes: usize,
 }
 
@@ -2330,6 +2348,7 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
         token_metrics,
         token_source,
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
     };
     write_json(cache_dir.join("meta.json"), &meta)?;
     write_json(
@@ -2385,6 +2404,7 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
         save_version: meta.save_version.clone(),
         created_at: now_rfc3339(),
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
         melted_bytes: melted.len(),
     };
     write_json(cache_dir.join("manifest.json"), &manifest)?;
@@ -2585,6 +2605,7 @@ fn cmd_inspect(path: &Path) -> Result<(), String> {
         token_metrics,
         token_source,
         reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        cache_schema_version: CACHE_SCHEMA_VERSION.to_string(),
     };
     print_json(&out)
 }

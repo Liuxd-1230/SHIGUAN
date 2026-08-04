@@ -73,6 +73,53 @@ def test_to_summary_dead():
     assert s.deathDate == "800.1.1"
 
 
+# ---------------------------------------------------------------------------
+# P0：主头衔判定状态（与 titles 列表同源，前端区分无头衔/未能确定/索引不可用）
+# ---------------------------------------------------------------------------
+
+
+def _bits(**kw):
+    from app.services.title_reign_extractor import TitleSummaryBits
+
+    return TitleSummaryBits(**kw)
+
+
+def test_to_summary_title_status_resolved():
+    from models import EntityRef, TitleTier
+
+    bits = _bits(
+        primary=EntityRef(id="k_dali", name="大理", type="title", resolved=True),
+        highestTier=TitleTier.KINGDOM,
+        isRuler=True,
+    )
+    s = to_summary(_stub(), title_bits=bits)
+    assert s.titleStatus.value == "resolved"
+    assert s.primaryTitle.name == "大理"
+    assert s.highestTitleTier == TitleTier.KINGDOM
+    assert s.isRuler is True
+
+
+def test_to_summary_title_status_no_titles():
+    s = to_summary(_stub(), title_bits=_bits())
+    assert s.titleStatus.value == "no_titles"
+    assert s.primaryTitle is None
+    assert s.isRuler is False
+
+
+def test_to_summary_title_status_tier_unknown():
+    """持有当前头衔但等级全部未知 → 不强行主头衔，标注 tier_unknown（而非无头衔）。"""
+    s = to_summary(_stub(), title_bits=_bits(isRuler=True))
+    assert s.titleStatus.value == "tier_unknown"
+    assert s.primaryTitle is None
+    assert s.isRuler is True
+
+
+def test_to_summary_title_status_index_unavailable():
+    """头衔索引不可用（title_bits=None）→ index_unavailable，而非误显示无头衔。"""
+    s = to_summary(_stub(), title_bits=None)
+    assert s.titleStatus.value == "index_unavailable"
+
+
 def test_to_profile_partial():
     p = to_profile(_stub(), _loader_with_culture())
     assert p.id == "6432"

@@ -308,6 +308,8 @@
 5. 生成历史、编辑与保存、文风切换 —— 生成记录 SQLite（saveSignature 关联 + stale）已在 3A 落地；编辑/保存 UI 留待 3B。
 6. 传记测试（时间倒置/推断当事实/虚构配偶头衔/无证据对白/每章关联事件/非法 JSON 重试）—— 校验/重试测试已在 3A 落地；正文级测试留待 3B。
 
+**Phase 3A.1（叙事输入收口，已落地）**：CompressedProfile v2（reignSummary / warSummary / warningSummary + 绰号/君主/House/主头衔/死因 + 婚约/妾室 + relatives 限量 4/6/6/6/6 + traits 去数字占位）；WarNarrativeNormalizer（defender/unknown 绝不写成主动宣战）；WarningAggregator（按 code 聚合，技术字段不入 prompt）；P0 头衔一致性（`titleStatus` 四态 + 顶部由 profile.titles 同源推导）；缓存 schema 版本写入全部 5 个缓存文件；旧提纲 compressionVersion 变化标 stale。下一步：**Phase 3B（正文生成 + 事实校验）**——BiographyGenerator 逐章生成（每章仅用该章事件）、确定性 FactChecker（20 规则）、有限自动修正、正文/修订历史持久化、异步任务进度、Fake CI + 真实模型冒烟。
+
 ---
 
 ## Phase 4 —— 增强沉浸感

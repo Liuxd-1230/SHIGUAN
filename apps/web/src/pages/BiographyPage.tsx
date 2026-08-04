@@ -6,6 +6,7 @@ import { setActiveSaveId } from "../lib/realRepository";
 import { buildDraft, eventChapterMap } from "../lib/buildOutline";
 import { titleTierLabel } from "../lib/labels";
 import { displayName } from "../lib/characterName";
+import { deriveTitleBits, type DerivedTitleBits } from "../lib/titleBits";
 import type { TitlePeriod } from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
@@ -23,6 +24,23 @@ function lifeSpan(birth?: string, death?: string, alive?: boolean): string {
   const b = birth ? birth.split(".")[0] : "生年不详";
   const d = death ? death.split(".")[0] : alive ? "在世" : "卒年不详";
   return `${b} – ${d}`;
+}
+
+/** P0：主头衔文案，区分「确认无头衔 / 持有头衔但未能确定 / 索引不可用」，不误显示为无头衔。 */
+function titleBitsText(bits: DerivedTitleBits | null): string {
+  if (!bits) return "…";
+  switch (bits.status) {
+    case "resolved":
+      return bits.primaryTitle
+        ? `${bits.primaryTitle.name}${bits.primaryTitle.resolved === false ? "（未解析）" : ""}`
+        : "无头衔";
+    case "tier_unknown":
+      return "持有头衔，主头衔未能确定";
+    case "index_unavailable":
+      return "头衔索引不可用";
+    default:
+      return "无头衔";
+  }
 }
 
 function prefersReducedMotion(): boolean {
@@ -99,6 +117,16 @@ export default function BiographyPage() {
     () => (draft ? eventChapterMap(draft.chapters) : {}),
     [draft],
   );
+  // P0：顶部主头衔与 TitlesPanel 同源——都由 profile.titles 确定性推导，
+  // 不再依赖 summary（真实模式不加载全量索引时 summary 恒为空，曾误显示「无头衔」）。
+  const titleBits = useMemo(
+    () => (profile ? deriveTitleBits(profile.titles) : null),
+    [profile],
+  );
+  const dyn = summary?.dynasty ?? profile?.dynasty;
+  const birth = summary?.birthDate ?? profile?.birthDate;
+  const death = summary?.deathDate ?? profile?.deathDate;
+  const alive = summary?.isAlive ?? (profile ? !profile.deathDate : true);
 
   const [activeEventId, setActiveEventId] = useState<string | null>(null);
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
@@ -259,14 +287,9 @@ export default function BiographyPage() {
               </p>
             )}
             <p className="mt-1 text-ink-600">
-              {summary?.primaryTitle?.name ?? "无头衔"}
-              {summary?.dynasty && <span> · {summary.dynasty.name}</span>}
-              {summary && (
-                <span>
-                  {" "}
-                  · {lifeSpan(summary.birthDate, summary.deathDate, summary.isAlive)}
-                </span>
-              )}
+              {titleBitsText(titleBits)}
+              {dyn && <span> · {dyn.name}</span>}
+              <span> · {lifeSpan(birth, death, alive)}</span>
             </p>
           </div>
         </div>
@@ -321,9 +344,9 @@ export default function BiographyPage() {
         {/* 传记正文（移动端置顶） */}
         <section className="order-1 lg:order-2">
           <div className="mb-3">
-            <h2 className="font-serif text-lg font-bold text-ink-900">传记</h2>
+            <h2 className="font-serif text-lg font-bold text-ink-900">史料摘要</h2>
             <p className="mt-1 text-xs text-ink-500">
-              传记草稿（由存档数据自动整理，非 AI 生成）
+              由存档事实确定性整理，非 AI 传记正文（正文由下方「AI 提纲」生成）
             </p>
           </div>
           <div className="space-y-5">

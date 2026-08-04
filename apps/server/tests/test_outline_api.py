@@ -256,6 +256,31 @@ def test_outlines_list_and_stale(client, tmp_path):
     assert records[0]["stale"] is True
 
 
+def test_outline_stale_when_compression_version_changed(client, tmp_path):
+    """3A.1：旧提纲基于旧压缩版本（v1）→ 标记 stale，前端提示重新生成。
+
+    即使存档签名未变化，压缩逻辑升级（COMPRESSION_VERSION 递增）后旧提纲
+    依据的档案语义已过时，不能再当"新鲜"结果展示。
+    """
+    c, _a, reg, _s, store, monkeypatch = client
+    sid = _register(tmp_path, reg)
+    _use_echo_provider(monkeypatch)
+    r = c.post(
+        f"/api/local-saves/{sid}/characters/1/biography/outline",
+        json={"style": "serious_biography"},
+    )
+    rid = r.json()["recordId"]
+    # 篡改该记录的 compression_version 为旧版（模拟 v1 时代生成的记录）。
+    store._conn.execute(
+        "UPDATE outline_generations SET compression_version = '1' WHERE id = ?", (rid,)
+    )
+    store._conn.commit()
+    r2 = c.get(f"/api/local-saves/{sid}/characters/1/biography/outlines")
+    records = r2.json()["records"]
+    assert records[0]["id"] == rid
+    assert records[0]["stale"] is True
+
+
 def test_outline_response_never_leaks_sensitive(client, tmp_path, monkeypatch):
     """响应不含：API Key、本地绝对路径、完整 prompt、原始存档内容。"""
     c, _a, reg, _s, store, _mp = client

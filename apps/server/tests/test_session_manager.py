@@ -31,6 +31,8 @@ class FakeAdapter:
             "dead_character_count": 1,
             # M3.1：_cache_valid 要求 reader_version 存在，模拟新版 reader 产物。
             "reader_version": "0.1.0-test",
+            # Phase 3A.1：cache schema 版本显式化（与 session_manager 常量一致）。
+            "cache_schema_version": "2",
         }
         (cache_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         (cache_dir / "mods.json").write_text(json.dumps({"mods": meta["mods"]}), encoding="utf-8")
@@ -65,18 +67,33 @@ class FakeAdapter:
             buf.append(line)
         (cache_dir / "characters.ndjson").write_text("\n".join(buf) + "\n", encoding="utf-8")
         (cache_dir / "character-offsets.json").write_text(json.dumps(offsets), encoding="utf-8")
-        (cache_dir / "manifest.json").write_text(json.dumps({"signature": cache_dir.name}), encoding="utf-8")
+        (cache_dir / "manifest.json").write_text(
+            json.dumps({"signature": cache_dir.name, "cache_schema_version": "2"}),
+            encoding="utf-8",
+        )
         # M2/M3 缓存产物：entities.json（实体索引）与 titles.json（头衔）——SessionManager
         # _cache_valid 要求这两个文件存在才视为缓存完整，重启后可复用。
+        # Phase 3A.1：5 个缓存文件都必须带同一 cache_schema_version，缺一则整体失效。
         (cache_dir / "entities.json").write_text(
-            json.dumps({"schema_version": 1, "kinds": {}}), encoding="utf-8"
+            json.dumps({"schema_version": 1, "kinds": {}, "cache_schema_version": "2"}),
+            encoding="utf-8",
         )
         (cache_dir / "titles.json").write_text(
-            json.dumps({"schema_version": 1, "title_count": 0, "titles": []}), encoding="utf-8"
+            json.dumps(
+                {"schema_version": 1, "title_count": 0, "titles": [], "cache_schema_version": "2"}
+            ),
+            encoding="utf-8",
         )
         # M4 缓存产物：memories.json（记忆库）——_cache_valid 要求其存在。
         (cache_dir / "memories.json").write_text(
-            json.dumps({"schema_version": 1, "memory_count": 0, "memories": []}),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "memory_count": 0,
+                    "memories": [],
+                    "cache_schema_version": "2",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -219,6 +236,47 @@ def test_stale_cache_without_reader_version_is_invalid(tmp_path):
     sm2 = SessionManager(tmp_path / "cache", adapter2)
     sess2 = sm2.prepare("s1", "sigA", "staging.ck3")
     assert adapter2.prepare_calls == 1  # 不信任旧缓存，重建
+    assert sess2.character_count == 3
+
+
+def test_stale_cache_with_wrong_schema_version_is_invalid(tmp_path):
+    """Phase 3A.1：cache_schema_version 缺失或不匹配 → 旧缓存必须失效重建。
+
+    reader 扫描/提取行为变更（如 CACHE_SCHEMA_VERSION 递增）后，旧缓存语义
+    已过时；若仅靠 reader_version + 二进制指纹，旧错误缓存可能被复用。
+    """
+    adapter = FakeAdapter()
+    sm = SessionManager(tmp_path / "cache", adapter)
+    sess = sm.prepare("s1", "sigA", "staging.ck3")
+    # 篡改 meta.json：改成旧版本号，模拟"升级前"的缓存产物。
+    meta_path = sess.cache_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["cache_schema_version"] = "1"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    adapter2 = FakeAdapter()
+    sm2 = SessionManager(tmp_path / "cache", adapter2)
+    sess2 = sm2.prepare("s1", "sigA", "staging.ck3")
+    assert adapter2.prepare_calls == 1  # 版本不符 → 重建
+    assert sess2.character_count == 3
+
+
+def test_stale_cache_when_any_cache_file_version_mismatch(tmp_path):
+    """Phase 3A.1：5 个缓存文件任一 cache_schema_version 不匹配 → 整体失效重建。
+
+    防止部分新旧的混合缓存被复用（如只升级了 titles 扫描而 entities 仍是旧格式）。
+    """
+    adapter = FakeAdapter()
+    sm = SessionManager(tmp_path / "cache", adapter)
+    sess = sm.prepare("s1", "sigA", "staging.ck3")
+    # 篡改 titles.json（非 meta）的版本号，meta.json 保持正确。
+    titles_path = sess.cache_dir / "titles.json"
+    titles = json.loads(titles_path.read_text(encoding="utf-8"))
+    titles["cache_schema_version"] = "1"
+    titles_path.write_text(json.dumps(titles), encoding="utf-8")
+    adapter2 = FakeAdapter()
+    sm2 = SessionManager(tmp_path / "cache", adapter2)
+    sess2 = sm2.prepare("s1", "sigA", "staging.ck3")
+    assert adapter2.prepare_calls == 1  # 任一文件版本不符 → 重建
     assert sess2.character_count == 3
 
 

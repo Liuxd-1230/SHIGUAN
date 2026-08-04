@@ -110,6 +110,7 @@ class OutlineStore:
         character_id: str,
         *,
         current_signature: Optional[str] = None,
+        current_compression_version: Optional[str] = None,
         limit: int = 20,
     ) -> list[dict]:
         with self._lock:
@@ -122,13 +123,21 @@ class OutlineStore:
                 (save_id, character_id, max(1, int(limit))),
             ).fetchall()
         return [
-            self._row_to_dict(row, current_signature=current_signature)
+            self._row_to_dict(
+                row,
+                current_signature=current_signature,
+                current_compression_version=current_compression_version,
+            )
             for row in rows
         ]
 
     # -- 内部 ---------------------------------------------------------------
     @staticmethod
-    def _row_to_dict(row: sqlite3.Row | tuple, current_signature: Optional[str] = None) -> dict:
+    def _row_to_dict(
+        row: sqlite3.Row | tuple,
+        current_signature: Optional[str] = None,
+        current_compression_version: Optional[str] = None,
+    ) -> dict:
         cols = [
             "id", "save_id", "save_signature", "character_id", "style", "status",
             "outline_json", "error_code", "error_message", "retry_count",
@@ -139,9 +148,14 @@ class OutlineStore:
         rec["warnings"] = json.loads(rec.pop("warning_json")) if rec.get("warning_json") else None
         rec.pop("save_id", None)  # 冗余字段不回传（前端已知道 saveId）
         sig = rec.pop("save_signature", None)
-        rec["stale"] = bool(
-            current_signature is not None and sig is not None and sig != current_signature
+        # stale 条件：存档签名变化（重解析）或压缩版本升级（旧提纲基于旧 v1 档案）。
+        sig_stale = current_signature is not None and sig is not None and sig != current_signature
+        ver_stale = bool(
+            current_compression_version is not None
+            and rec.get("compression_version") is not None
+            and rec["compression_version"] != current_compression_version
         )
+        rec["stale"] = sig_stale or ver_stale
         return rec
 
 
