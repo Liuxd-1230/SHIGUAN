@@ -26,6 +26,7 @@ from models import (
     EvidenceWarning,
     EventType,
     RelationshipPeriod,
+    RelationshipType,
     Sex,
     TimelineEvent,
     TitlePeriod,
@@ -35,6 +36,62 @@ from models import (
 
 from app.services.localization import LocalizationLoader
 from app.services.title_reign_extractor import TitleSummaryBits, _date_key
+
+
+def _resolve_char_name(cid, by_id=None, loader: Optional[LocalizationLoader] = None) -> str:
+    """经会话人物索引把人物 id 解析为可读名；查不到 → 原 id（不伪造）。
+
+    M4：人物索引里 name 是本地化键（如 max_chinese_male_name_117825），
+    loader（含游戏本地化表）把它解析成真实人名；loader 缺失时回退为键本身，
+    无论如何都比裸数字 id 可读。
+    """
+    stub = (by_id or {}).get(str(cid))
+    if not stub:
+        return str(cid)
+    nk = stub.get("name") or ""
+    if not nk:
+        return str(cid)
+    if loader is not None:
+        resolved = loader.resolve(nk)
+        if resolved:
+            return resolved
+    return nk
+
+
+def derive_siblings(stub: dict, by_id: Optional[dict] = None) -> list[CharacterRef]:
+    """由共享父母推导兄弟姐妹（M4）。
+
+    CK3 存档没有直述的 sibling 字段；兄弟姐妹 = 与该人物共享父亲或母亲的其他人物。
+    人物不在索引中 → 跳过（不伪造）；推断结果由调用方按需标注。
+    """
+    cid = str(stub.get("id"))
+    if not by_id:
+        return []
+    father = stub.get("father")
+    mother = stub.get("mother")
+    out: list[CharacterRef] = []
+    seen: set[str] = set()
+    for other_id, other in by_id.items():
+        if other_id == cid:
+            continue
+        if father and other.get("father") == father:
+            pass
+        elif mother and other.get("mother") == mother:
+            pass
+        else:
+            continue
+        if other_id in seen:
+            continue
+        seen.add(other_id)
+        out.append(
+            CharacterRef(
+                id=other_id,
+                name=_resolve_char_name(other_id, by_id),
+                sourcePath=f"character/{cid}/siblings/{other_id}#inferred_from_shared_parent",
+            )
+        )
+    out.sort(key=lambda r: r.id)
+    return out
 
 
 def _entity(
@@ -245,18 +302,34 @@ def to_summary(
     )
 
 
+def _relationship_period(cid: str, rel_id, rtype: RelationshipType, source_path: str, by_id=None, loader=None, is_former: bool = False) -> RelationshipPeriod:
+    """构造一段关系（M4：名字经会话索引解析，不再裸 id；former 关系带 isFormer）。"""
+    return RelationshipPeriod(
+        characterId=str(rel_id),
+        name=_resolve_char_name(rel_id, by_id, loader),
+        type=rtype,
+        confidence=Confidence.CONFIRMED,
+        sourcePath=source_path,
+        isFormer=is_former,
+    )
+
+
 def to_profile(
     stub: dict,
     loader: Optional[LocalizationLoader] = None,
     title_periods: Optional[list[TitlePeriod]] = None,
     title_events: Optional[list[TimelineEvent]] = None,
     title_warnings: Optional[list[EvidenceWarning]] = None,
+    by_id: Optional[dict] = None,
+    memory_index=None,
 ) -> CharacterProfile:
     """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。
 
     M3：title_periods 为 landed_titles 反解的任期（CharacterProfile.titles）；
     title_events 为头衔时间线事件（title_gain/loss/succession，均带 EvidenceRef）；
     title_warnings 为头衔相关告警（冲突 / 多同级推断），合并进 evidenceWarnings。
+    M4：by_id 为会话人物索引（名字解析 + 兄弟推导）；memory_index 为
+    MemoryTimelineIndex（memories / friends / rivals / lovers / 记忆时间线事件）。
     """
     cid = str(stub.get("id"))
     name_key = stub.get("name") or ""
@@ -286,15 +359,57 @@ def to_profile(
             )
         )
 
+    # M4：婚姻历史语义化 —— spouse（现任）/ former_spouses（前任，isFormer）/
+    # betrothed（婚约）/ concubine+concubinist（妾室，含前任 isFormer）。
     spouses: list[RelationshipPeriod] = []
     for s in stub.get("spouses", []) or []:
         spouses.append(
-            RelationshipPeriod(
-                characterId=str(s),
-                name=str(s),
-                type="spouse",  # type: ignore[arg-type]
-                confidence=Confidence.CONFIRMED,
-                sourcePath=f"character/{cid}/spouse/{s}",
+            _relationship_period(
+                cid, s, RelationshipType.SPOUSE, f"character/{cid}/spouse/{s}",
+                by_id, loader,
+            )
+        )
+    for s in stub.get("former_spouses", []) or []:
+        spouses.append(
+            _relationship_period(
+                cid, s, RelationshipType.SPOUSE, f"character/{cid}/former_spouses/{s}",
+                by_id, loader, is_former=True,
+            )
+        )
+    betrothed = stub.get("betrothed")
+    if betrothed:
+        spouses.append(
+            _relationship_period(
+                cid, betrothed, RelationshipType.BETROTHED,
+                f"character/{cid}/betrothed", by_id, loader,
+            )
+        )
+    for s in stub.get("concubines", []) or []:
+        spouses.append(
+            _relationship_period(
+                cid, s, RelationshipType.CONCUBINE,
+                f"character/{cid}/concubine/{s}", by_id, loader,
+            )
+        )
+    if stub.get("concubinist"):
+        spouses.append(
+            _relationship_period(
+                cid, stub["concubinist"], RelationshipType.CONCUBINE,
+                f"character/{cid}/concubinist", by_id, loader,
+            )
+        )
+    for s in stub.get("former_concubines", []) or []:
+        spouses.append(
+            _relationship_period(
+                cid, s, RelationshipType.CONCUBINE,
+                f"character/{cid}/former_concubines/{s}", by_id, loader, is_former=True,
+            )
+        )
+    for s in stub.get("former_concubinists", []) or []:
+        spouses.append(
+            _relationship_period(
+                cid, s, RelationshipType.CONCUBINE,
+                f"character/{cid}/former_concubinists/{s}", by_id, loader, is_former=True,
             )
         )
 
@@ -317,6 +432,21 @@ def to_profile(
     timeline = list(events)
     if title_events:
         timeline.extend(title_events)
+
+    # M4：记忆时间线 + 关系列表（记忆索引缺失时保持空，绝不伪造）。
+    memories: list = []
+    friends: list = []
+    rivals: list = []
+    lovers: list = []
+    if memory_index is not None:
+        memories = memory_index.memories(cid)
+        timeline.extend(memory_index.timeline_events(cid))
+        rel = memory_index.relationships(cid)
+        friends = rel.friends
+        rivals = rel.rivals
+        lovers = rel.lovers
+        warnings = list(warnings) + list(memory_index.warnings(cid))
+
     # 时间线按日期数值排序（未知日期排最后），保持各页/章节稳定顺序。
     timeline.sort(key=lambda e: _date_key(e.date or ""))
     if title_warnings:
@@ -338,14 +468,14 @@ def to_profile(
         parents=parents,
         spouses=spouses,
         children=children,
-        siblings=[],
-        friends=[],
-        rivals=[],
-        lovers=[],
+        siblings=derive_siblings(stub, by_id),  # M4：共享父母推导（含推断标注）
+        friends=friends,
+        rivals=rivals,
+        lovers=lovers,
         wars=[],
         imprisonments=[],
         travels=[],
-        memories=[],
+        memories=memories,
         timeline=timeline,
         evidenceWarnings=warnings,
     )

@@ -8,6 +8,7 @@ import { titleTierLabel } from "../lib/labels";
 import type { TitlePeriod } from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
+import MemoriesPanel from "../components/MemoriesPanel";
 import PortraitFrame from "../components/PortraitFrame";
 import MuseumSurface from "../components/MuseumSurface";
 import ScrollPanel from "../components/ScrollPanel";
@@ -264,6 +265,10 @@ export default function BiographyPage() {
 
       <div className="mt-6">
         <TitlesPanel titles={profile.titles} />
+      </div>
+
+      <div className="mt-6">
+        <MemoriesPanel profile={profile} />
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">

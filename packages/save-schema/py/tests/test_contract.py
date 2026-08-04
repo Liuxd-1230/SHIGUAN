@@ -137,6 +137,25 @@ def test_valid_relationship_type_accepted():
     assert rp.type == RelationshipType.SPOUSE
 
 
+def test_m4_relationship_type_values_and_is_former():
+    """M4：betrothed/concubine 是合法枚举；isFormer 语义（前配偶/前妾室）可序列化往返。"""
+    for kind in (RelationshipType.BETROTHED, RelationshipType.CONCUBINE, RelationshipType.OTHER):
+        rp = RelationshipPeriod(
+            characterId="x", name="y", type=kind, confidence=Confidence.CONFIRMED
+        )
+        assert rp.type == kind
+    former = RelationshipPeriod(
+        characterId="s",
+        name="前夫",
+        type=RelationshipType.SPOUSE,
+        confidence=Confidence.CONFIRMED,
+        isFormer=True,
+    )
+    data = former.model_dump()
+    assert data["isFormer"] is True
+    assert RelationshipPeriod(**data).isFormer is True
+
+
 def test_invalid_war_role_rejected():
     with pytest.raises(ValidationError):
         WarParticipation(warId="w", name="war", role="general")

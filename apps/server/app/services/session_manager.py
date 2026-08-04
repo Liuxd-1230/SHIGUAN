@@ -148,6 +148,7 @@ class SessionManager:
             and (cache_dir / "character-offsets.json").is_file()
             and (cache_dir / "entities.json").is_file()
             and (cache_dir / "titles.json").is_file()
+            and (cache_dir / "memories.json").is_file()
         ):
             return False
         try:
@@ -217,6 +218,10 @@ class SessionManager:
     def titles(self, sess: ParseSession) -> dict:
         """读取该会话的 titles.json（M3 头衔与统治经历，不重新 melt）。"""
         return self.adapter.titles(sess.cache_dir)
+
+    def memories(self, sess: ParseSession) -> dict:
+        """读取该会话的 memories.json（M4 记忆库，不重新 melt）。"""
+        return self.adapter.memories(sess.cache_dir)
 
     def list_characters(
         self,

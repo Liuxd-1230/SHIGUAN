@@ -54,6 +54,7 @@ from app.services.game_data_resolver import GameDataResolver
 from app.services.game_def_loader import GameDefLoader
 from app.services.local_save_discovery import LocalSaveDiscoveryService
 from app.services.localization import LocalizationLoader
+from app.services.memory_timeline_extractor import MemoryTimelineIndex
 from app.services.mod_resolver import ModResolver, read_launcher_playset
 from app.services.entity_index_builder import EntityIndexBuilder, ReferenceResolver
 from app.services.save_registry import SaveRegistry, SaveStillWritingError
@@ -78,6 +79,9 @@ _loc_cache: dict[tuple, LocalizationLoader] = {}
 # M3：头衔索引缓存（一次反解 titles.json，列表页/档案页/titles 端点复用）。
 # 值：(TitleProfileIndex, scanner_warnings) —— scanner_warnings 为 Rust 扫描告警。
 _title_index_cache: dict[tuple[str, str], tuple[TitleProfileIndex, list[str]]] = {}
+# M4：记忆索引缓存（一次反解 memories.json，档案页/memories 端点复用）。
+# 值：(MemoryTimelineIndex, scanner_warnings)。
+_memory_index_cache: dict[tuple[str, str], tuple[MemoryTimelineIndex, list[str]]] = {}
 
 
 # -- 统一错误结构 -------------------------------------------------------------
@@ -157,6 +161,7 @@ def _on_watch_change(added, removed, changed) -> None:
                 _registry.register(s.path)
                 _session_manager.drop_save(save_id)
                 _drop_title_index(save_id)
+                _drop_memory_index(save_id)
             except Exception:  # noqa: BLE001
                 pass
     del _watcher_events[:-50]
@@ -202,6 +207,35 @@ def _drop_title_index(save_id: str) -> None:
     for k in list(_title_index_cache.keys()):
         if k[0] == save_id:
             del _title_index_cache[k]
+
+
+def _memory_index(sess, save_id: str) -> tuple[MemoryTimelineIndex, list[str]]:
+    """构建（或复用）该存档的记忆索引：memories.json + 人物索引 + 本地化。
+
+    返回 (index, scanner_warnings)。一次反解后按 (save_id, signature) 缓存；
+    档案页与 memories 端点共享，绝不重复扫描 memories.json，也不重新 melt。
+    人物名解析只依赖人物索引 stub + 本地化表，无需 GameDefLoader。
+    """
+    key = (save_id, sess.signature)
+    cached = _memory_index_cache.get(key)
+    if cached is not None:
+        return cached
+    raw = _session_manager.memories(sess)
+    meta = _session_manager.meta(sess)
+    game_version = meta.get("game_version")
+    descriptors = _descriptors_from_meta(meta)
+    report = _mod_resolver().resolve(descriptors, game_version)
+    loader = _build_localization(save_id, sess.signature, report.required)
+    index = MemoryTimelineIndex(raw, by_id=sess.by_id, loc=loader)
+    scanner_warnings = list(raw.get("warnings") or [])
+    _memory_index_cache[key] = (index, scanner_warnings)
+    return index, scanner_warnings
+
+
+def _drop_memory_index(save_id: str) -> None:
+    for k in list(_memory_index_cache.keys()):
+        if k[0] == save_id:
+            del _memory_index_cache[k]
 
 
 def _ensure_session(save_id: str):
@@ -280,6 +314,7 @@ def put_settings(req: PathsSettings):
         raise _fail(400, "invalid_dir", str(exc)) from exc
     _loc_cache.clear()
     _title_index_cache.clear()
+    _memory_index_cache.clear()
     return {"saved": saved}
 
 
@@ -731,13 +766,55 @@ def character_profile_endpoint(save_id: str, character_id: str):
             character_id, display_name, title_periods, primary_period
         )
         title_warnings = title_index.warnings(character_id)
+    # M4：记忆索引（memories / friends / rivals / lovers / 记忆时间线事件）。
+    memory_index = None
+    try:
+        memory_index, _ = _memory_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError):
+        memory_index = None
     return to_profile(
         stub,
         loader,
         title_periods=title_periods,
         title_events=title_events,
         title_warnings=title_warnings,
+        by_id=sess.by_id,
+        memory_index=memory_index,
     ).model_dump()
+
+
+@router.get("/local-saves/{save_id}/characters/{character_id}/memories")
+def character_memories_endpoint(save_id: str, character_id: str):
+    """M4 关系与记忆：从 memories.json 聚合单角色的记忆/关系（不重新 melt）。
+
+    - memories：归属到该人物的记忆 LifeEvent[]（含无日期条目，诚实呈现）。
+    - friends/rivals/lovers：由 became_* 记忆同日期配对推断（INFERRED，名字可解析）；
+      未配对的关系以 *_count 计数呈现（不伪造名字）。
+    - warnings 含 Rust 扫描告警 + 推断告警。
+    """
+    _rec, sess = _ensure_session(save_id)
+    try:
+        index, scanner_warnings = _memory_index(sess, save_id)
+    except (ReaderExecutionError, ReaderMissingError) as exc:
+        raise _fail(500, "reader_error", str(exc)) from exc
+    rel = index.relationships(character_id)
+    return {
+        "saveId": save_id,
+        "characterId": character_id,
+        "memoryCount": len(index.memories(character_id)),
+        "skippedTypeCount": index.skipped_type_count,
+        "memories": [m.model_dump() for m in index.memories(character_id)],
+        "relationships": {
+            "friends": [r.model_dump() for r in rel.friends],
+            "rivals": [r.model_dump() for r in rel.rivals],
+            "lovers": [r.model_dump() for r in rel.lovers],
+            "friendCount": rel.friend_count,
+            "rivalCount": rel.rival_count,
+            "loverCount": rel.lover_count,
+        },
+        "warnings": scanner_warnings
+        + [w.model_dump() for w in index.warnings(character_id)],
+    }
 
 
 # -- 清理 ---------------------------------------------------------------------
@@ -748,6 +825,7 @@ def delete_save_endpoint(save_id: str):
     removed = _registry.remove(save_id)
     _session_manager.drop_save(save_id)
     _drop_title_index(save_id)
+    _drop_memory_index(save_id)
     if sig:
         _loc_cache.pop((save_id, sig), None)
     return {"saveId": save_id, "removed": removed}

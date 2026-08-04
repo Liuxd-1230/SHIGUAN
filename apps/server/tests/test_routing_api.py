@@ -47,7 +47,7 @@ class FakeAdapter:
         recs = [
             {"id": "1", "name": "Alice", "birth": "700.1.1", "death": None, "alive": True,
              "sex": "female", "culture": "c1", "faith": "41", "dynasty": "9067",
-             "father": None, "mother": None, "spouses": [], "children": ["2"],
+             "father": None, "mother": None, "spouses": ["2"], "children": ["2"],
              "traits": ["genius"], "ruler": True, "evidence_warnings": ["faith", "dynasty", "primary_title"]},
             {"id": "2", "name": "Bob", "birth": "730.1.1", "death": "800.1.1", "alive": False,
              "sex": "male", "culture": "c2", "faith": "42", "dynasty": "9067",
@@ -108,12 +108,70 @@ class FakeAdapter:
         (cache_dir / "titles.json").write_text(
             json.dumps(titles, ensure_ascii=False), encoding="utf-8"
         )
+        # M4：记忆库（married 归属 Alice(1)/Bob(2)；became_friends 同日期成对推断）。
+        memories = {
+            "schema_version": 1,
+            "reader_version": "0.1.0",
+            "scan_ms": 1.0,
+            "memory_count": 5,
+            "memories": [
+                {
+                    "id": "100",
+                    "memory_type": "married",
+                    "participants": [{"role": "spouse", "character_id": "2"}],
+                    "creation_date": "760.1.1",
+                    "end_date": "890.1.1",
+                    "battle_location_id": None,
+                },
+                {
+                    "id": "101",
+                    "memory_type": "married",
+                    "participants": [{"role": "spouse", "character_id": "1"}],
+                    "creation_date": "760.1.1",
+                    "end_date": "890.1.1",
+                    "battle_location_id": None,
+                },
+                {
+                    "id": "102",
+                    "memory_type": "battle_won_memory",
+                    "participants": [{"role": "loser", "character_id": "3"},
+                                     {"role": "ruler", "character_id": "1"}],
+                    "creation_date": "790.1.1",
+                    "end_date": "920.1.1",
+                    "battle_location_id": "6473",
+                },
+                # became_friends 同日期成对 → 推断 Alice(1) 与 Bob(2) 互为好友。
+                {
+                    "id": "103",
+                    "memory_type": "became_friends",
+                    "participants": [{"role": "new_relation", "character_id": "2"}],
+                    "creation_date": "770.1.1",
+                    "end_date": "900.1.1",
+                    "battle_location_id": None,
+                },
+                {
+                    "id": "104",
+                    "memory_type": "became_friends",
+                    "participants": [{"role": "new_relation", "character_id": "1"}],
+                    "creation_date": "770.1.1",
+                    "end_date": "900.1.1",
+                    "battle_location_id": None,
+                },
+            ],
+            "warnings": [],
+        }
+        (cache_dir / "memories.json").write_text(
+            json.dumps(memories, ensure_ascii=False), encoding="utf-8"
+        )
 
     def meta(self, cache_dir):
         return json.loads(Path(cache_dir / "meta.json").read_text(encoding="utf-8"))
 
     def titles(self, cache_dir):
         return json.loads(Path(cache_dir / "titles.json").read_text(encoding="utf-8"))
+
+    def memories(self, cache_dir):
+        return json.loads(Path(cache_dir / "memories.json").read_text(encoding="utf-8"))
 
     def entities(self, cache_dir):
         return json.loads(Path(cache_dir / "entities.json").read_text(encoding="utf-8"))
@@ -140,6 +198,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(saves, "_session_manager", sm)
     monkeypatch.setattr(saves, "_loc_cache", {})
     monkeypatch.setattr(saves, "_title_index_cache", {})
+    monkeypatch.setattr(saves, "_memory_index_cache", {})
     # 测试隔离：不加载真实游戏本地化（CI/无游戏环境一致，且快）。
     monkeypatch.setattr(saves, "_game_resolver", lambda: GameDataResolver(game_dir="__no_game__"))
     monkeypatch.setattr(saves, "_watcher_events", [])
@@ -540,6 +599,63 @@ def test_title_paths_do_not_leak_local_paths(client, tmp_path):
                 assert not value[:2].replace(":", "").isalnum() or ":" not in value[:2], (
                     f"响应含盘符前缀: {value}"
                 )
+
+
+def test_profile_includes_m4_relationships_and_memories(client, tmp_path):
+    """M4：人物档案含记忆、关系（friends 推断）、记忆时间线事件与证据。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/saves/{sid}/characters/1")
+    assert r.status_code == 200
+    p = r.json()
+    # 好友：became_friends 同日期成对推断 → Alice(1) 与 Bob(2) 互为好友（真实人名）。
+    assert [f["id"] for f in p["friends"]] == ["2"]
+    # 记忆：married（spouse=2）+ battle_won（ruler=1）+ became_friends（new_relation=2）。
+    types = {m["type"] for m in p["memories"]}
+    assert "marriage" in types
+    assert "war" in types
+    assert "other" in types  # became_friends 关系型记忆进 memories 列表
+    # 婚姻记忆归属到 Alice（family_data 交叉核对），对方 Bob 名字可解析。
+    married_mem = next(m for m in p["memories"] if m["type"] == "marriage")
+    assert married_mem["relatedCharacters"][0]["id"] == "2"
+    assert married_mem["relatedCharacters"][0]["name"] == "Bob"
+    # 时间线事件：marriage + war 均带 memory 证据。
+    mem_events = [e for e in p["timeline"] if e["id"].startswith("1-memory-")]
+    assert len(mem_events) == 2
+    for e in mem_events:
+        assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+        assert e["evidence"][0]["sourceType"] == "memory"
+
+
+def test_memories_endpoint_returns_memory_and_relationships(client, tmp_path):
+    """M4：/memories 端点返回归属记忆 + 关系（friends/rivals/lovers）+ warnings。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/local-saves/{sid}/characters/1/memories")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["characterId"] == "1"
+    assert body["memoryCount"] == 3  # married + battle + became_friends
+    assert [f["id"] for f in body["relationships"]["friends"]] == ["2"]
+    assert body["relationships"]["rivals"] == []
+    assert body["skippedTypeCount"] == 0
+    # 不存在的 id → 空结果（不 404）。
+    r2 = c.get(f"/api/local-saves/{sid}/characters/999999/memories")
+    assert r2.status_code == 200
+    assert r2.json()["memories"] == []
+
+
+def test_m4_memory_paths_do_not_leak_local_paths(client, tmp_path):
+    """M4 安全：memories 端点的 sourcePath 不含本地绝对路径（盘符/反斜杠）。"""
+    c, _a, reg, _s = client
+    sid = _register(tmp_path, reg)
+    r = c.get(f"/api/local-saves/{sid}/characters/1/memories")
+    assert r.status_code == 200
+    data = r.json()
+    for value in _walk_strings(data):
+        if "path" in value or "Path" in value:
+            assert "\\" not in value, f"响应泄露本地路径片段: {value}"
+            assert ":" not in value[:2], f"响应含盘符前缀: {value}"
 
 
 def _walk_strings(obj):

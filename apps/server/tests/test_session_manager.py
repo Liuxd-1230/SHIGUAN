@@ -74,12 +74,20 @@ class FakeAdapter:
         (cache_dir / "titles.json").write_text(
             json.dumps({"schema_version": 1, "title_count": 0, "titles": []}), encoding="utf-8"
         )
+        # M4 缓存产物：memories.json（记忆库）——_cache_valid 要求其存在。
+        (cache_dir / "memories.json").write_text(
+            json.dumps({"schema_version": 1, "memory_count": 0, "memories": []}),
+            encoding="utf-8",
+        )
 
     def meta(self, cache_dir):
         return json.loads(Path(cache_dir / "meta.json").read_text(encoding="utf-8"))
 
     def titles(self, cache_dir):
         return json.loads(Path(cache_dir / "titles.json").read_text(encoding="utf-8"))
+
+    def memories(self, cache_dir):
+        return json.loads(Path(cache_dir / "memories.json").read_text(encoding="utf-8"))
 
     def entities(self, cache_dir):
         return json.loads(Path(cache_dir / "entities.json").read_text(encoding="utf-8"))

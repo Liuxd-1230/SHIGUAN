@@ -146,12 +146,15 @@ export interface PositionPeriod {
 export interface RelationshipPeriod {
   characterId: string;
   name: string;
-  type: "spouse" | "lover" | "friend" | "rival" | "murderer" | "other";
+  /** 含 M4 新增：betrothed（婚约）、concubine（妾室）。 */
+  type: "spouse" | "lover" | "friend" | "rival" | "murderer" | "betrothed" | "concubine" | "other";
   start?: string;
   end?: string;
   /** 关系是否由数据确认；如仅能从子女反推则为 inferred。 */
   confidence: Confidence;
   sourcePath?: string;
+  /** M4：存档直述的"前任"关系（former_spouses / former_concubines），与现任区分。 */
+  isFormer?: boolean;
 }
 
 /** 战争参与记录。 */

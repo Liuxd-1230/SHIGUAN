@@ -179,18 +179,19 @@
 
 ---
 
-## Phase 2B —— 真实人物语义深化（M1–M3 已完成）
+## Phase 2B —— 真实人物语义深化（M1–M4 已完成）
 
 > Phase 2B 在 Phase 2A（后端 + 真实解析 MVP）之上把人物语义做深：
 > 反推真实 token、修复人物字段提取（M1）、实体索引 + 引用解析（M2）、
-> 头衔与统治经历（M3）。真实存档 1.19.0.6 三方交叉验证一致。
+> 头衔与统治经历（M3）、关系与记忆深化（M4）。真实存档 1.19.0.6 三方交叉验证一致。
 
 完成项：
 - ✅ M1（#117，commit `fa1dfd2`）：反推真实 token（修正 4 个错误假设）+ 重写 `scan_characters_full`（多容器 `living`/`dead_unprunable`/`dead_prunable` = 44096 人物、反推父母、traits/sex/spouse 真值）+ 诊断子命令四方修复 + 独立 Python `expect.py` 三方交叉验证一致。详见 `docs/character-field-research.md`。
 - ✅ M2（#118，commit `3214461`）：实体索引 10 类（`entities.json`，内部键未本地化）+ `ReferenceResolver` 诚实解析（未命中 name=原id、不编造）+ `TokenSourceInfo`/`detect_token_source` 兼容性自报（`enum_resolved` 才是枚举翻译指标）；Python `GameDefLoader`/`EntityIndexBuilder`/`ReferenceResolver`；`GET /local-saves/{id}/entities`。契约 25。
 - ✅ M3（#119，本提交）：头衔与统治经历 —— Rust `scan_titles`（`titles.json`：key/名/等级/现任持有者/history，Format A `date=ID` 与 Format B `date={type=... holder=ID}` 双格式）；Python `TitleReignExtractor`（现任头衔 `isCurrent=True`、过往任职段聚合、名字解析 存档直书→实体索引→本地化→key 不伪造）；`GET /local-saves/{id}/characters/{cid}/titles`；真实存档实测教宗国现任持有者 5371（start 752.3.22）。
 - ✅ M3 连带修复（真实集成测试暴露的回归）：M2 误删 `POST /local-saves/{id}/parse` 装饰器（补回 + 新增 `test_critical_routes_registered` 路由注册表防护）；`extract_field` 子串匹配把 `save_game_version=15` 误命中 `version`（改整词匹配，game_version 恢复 "1.19.0.6"）；trait 本地化查不到回退原 id（不伪造）；缓存 meta.json 增加 `reader_version` 门槛 + **二进制指纹门禁**（占位/真实 token 表构建互不复用缓存，防静默 25 字节空数据）；test_api 的 35078→44096 断言同步。
-- ⚠️ 边界：`enum_resolved` 仅在 literal_key（明文存档）为 true；真实 token 表下字段名可读但 enum 值（faith/dynasty 等）仍为数字 id，中文化需本地化映射（M3.2 之后）。地图 / 家族树 / LLM 传记正文未做。
+- ✅ M4（#120，本提交）：关系与记忆深化 —— Rust `scan_memories`（`memories.json`：id/type/participants 角色表/creation_date/end_date/battle_location，容忍 `NUMBER=none` 与无日期条目）+ `scan_characters_full` 增 `former_spouses`(t3241)/`betrothed`(t2bb9)/`concubine`(t2bd3)/`concubinist`(t336e)/`former_concubinists`(t33a2)/`former_concubines`(t33a3) 6 字段；Python `MemoryTimelineIndex`（主体角色归属表 → `CharacterProfile.memories` + 时间线事件 + 好友/宿敌/恋人 date-pairing 推断 + 告警，全程会话记录解析真实人名）；`GET /local-saves/{id}/characters/{cid}/memories`；前端 `MemoriesPanel`（关系 chips + 按日期排序记忆列表 + 空态/降级）；契约微调（`betrothed`/`concubine` + `RelationshipPeriod.isFormer`）。
+- ⚠️ 边界：`enum_resolved` 仅在 literal_key（明文存档）为 true；真实 token 表下字段名可读但 enum 值（faith/dynasty 等）仍为数字 id，中文化需本地化映射（M3.2 之后）。记忆 owner 无法从全局计数器解码：married/child_born 用 family_data 交叉引用归属（99.3%）、became_* 用日期配对推断（标 `inferred`）、owner 非 participant 的类型（imprisoned/ascended_throne_memory 等）诚实跳过并计数。地图 / 家族树 / LLM 传记正文未做。
 
 ### 本轮（Phase 2B M3）验证结果
 
@@ -201,6 +202,15 @@
 - CI：`.github/workflows/ci.yml` rust 作业新增 `cargo test --release`（M3 的 16 项 Rust 测试进入 CI）。
 - 真实存档实测：`titles.json` **19003 条**（empire 128 / kingdom 401 / duchy 1205 / county 4811 / barony 11297 / unknown 1161）；**5230** 名现任统治者、**7423** 人有头衔记录；`primary_title_inferred` 0 例、`title_holder_conflict` 18 例；样本 6441（王国 primary 幽蓟，8 段）、4918（已故皇帝，3 头衔 742.7.1→743.11.2，6 条 gain/loss 全 `confirmed` 带证据，0 缺证据）、5371（教宗国，start 752.3.22）。
 - 详细报告：`docs/phase2b-m3-report.md`。
+
+### 本轮（Phase 2B M4）验证结果
+
+- Rust：`cargo fmt --all -- --check` 0 / `cargo clippy --release -- -D warnings` 0 / `cargo test --release` **20 passed**（新增 scan_memories 4 项）/ `bash build.sh`（真实 token 表）构建成功。
+- 契约 `save-schema`：**26 passed**（`RelationshipType` 增 `betrothed`/`concubine`、`RelationshipPeriod.isFormer` 双端一致）。
+- 后端 pytest：无真实存档 **153 passed / 9 skipped**；真实存档（`SHIGUAN_TEST_SAVE`）**163 passed / 0 skipped**（含 `test_character_memories`、`test_character_titles`、婚姻历史字段 6 项实测、二进制指纹门禁）。
+- 前端：`tsc --noEmit` 0 错 / `npm run lint` 0 错 0 警告 / `vitest` **122 passed**（新增 `MemoriesPanel` 5 项，`BiographyPage` 12 项保留）/ `vite build` 成功。
+- 真实存档实测：`memories.json` **28675 条**、**116 种类型**；married 记忆按夫妻成对归属 **6498/6543（99.3%）**；became_* 同日期成对推断（soulmates 21/11 日期成对 10、friends 1729/662 成对 444、lovers 305/139 成对 113、rivals 1028/399 成对 289，未成对仅计数不伪造名）；诚实跳过 **4572 条**（imprisoned/ascended_throne_memory 等 owner 非 participant）；婚姻历史字段实测（12659 `former_spouses=[9536]` → `isFormer=true`）；样本 12659（3 记忆 + 3 时间线事件 0 缺证据）、6039 恋人含 4927 号日期配对推断；随机 200 人物抽样时间线事件 **0 缺证据**。
+- 详细报告：`docs/phase2b-m4-report.md`。
 
 ---
 

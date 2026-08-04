@@ -84,6 +84,22 @@ const K_CHILD: &[&str] = &["child", "t2811"];
 const K_SPOUSE: &[&str] = &["spouse", "t2810"];
 const K_PRIMARY_SPOUSE: &[&str] = &["primary_spouse", "t332f"];
 const K_REAL_FATHER: &[&str] = &["real_father", "t2a5b"];
+// —— M4：婚姻历史（former_spouses=块列表；betrothed/concubine/concubinist=标量可多行；former_concubinists/former_concubines=块列表）——
+const K_FORMER_SPOUSES: &[&str] = &["former_spouses", "t3241"];
+const K_BETROTHED: &[&str] = &["betrothed", "t2bb9"];
+const K_CONCUBINE: &[&str] = &["concubine", "t2bd3"];
+const K_CONCUBINIST: &[&str] = &["concubinist", "t336e"];
+const K_FORMER_CONCUBINISTS: &[&str] = &["former_concubinists", "t33a2"];
+const K_FORMER_CONCUBINES: &[&str] = &["former_concubines", "t33a3"];
+
+// —— M4：记忆条目内字段（character_memory_manager.database）——
+// participants/creation_date/end_date/variables/identity 均可被 token 化（占位表形态），
+// 角色名（loser/ruler/new_relation…）在 melt 中多为字面键，无需 token 候选。
+const K_PARTICIPANTS: &[&str] = &["participants", "t282a"];
+const K_CREATION_DATE: &[&str] = &["creation_date", "t347b"];
+const K_END_DATE: &[&str] = &["end_date", "t0cd6"];
+const K_VARIABLES: &[&str] = &["variables", "t0555"];
+const K_IDENTITY: &[&str] = &["identity", "t00db"];
 
 // —— dead_data 子块（存在即代表已死亡）——
 const K_DEAD_DATA: &[&str] = &["dead_data", "t2750"];
@@ -283,6 +299,20 @@ struct CharacterRecord {
     /// 或 `real_father`（存档直述）。为空表示未确定亲代。
     #[serde(default)]
     parent_source: Option<String>,
+    // —— Phase 2B M4 新增：婚姻历史（对旧缓存用 serde default 兼容）——
+    #[serde(default)]
+    former_spouses: Vec<String>,
+    #[serde(default)]
+    betrothed: Option<String>,
+    /// 可多行出现（一人可有多个妾室），也可能是块列表。
+    #[serde(default)]
+    concubines: Vec<String>,
+    #[serde(default)]
+    concubinist: Option<String>,
+    #[serde(default)]
+    former_concubinists: Vec<String>,
+    #[serde(default)]
+    former_concubines: Vec<String>,
 }
 
 impl CharacterRecord {
@@ -319,6 +349,12 @@ impl CharacterRecord {
             killer: None,
             container: Some(container.to_string()),
             parent_source: None,
+            former_spouses: Vec::new(),
+            betrothed: None,
+            concubines: Vec::new(),
+            concubinist: None,
+            former_concubinists: Vec::new(),
+            former_concubines: Vec::new(),
         }
     }
 }
@@ -698,6 +734,10 @@ enum ListKind {
     Child,
     Spouse,
     Traits,
+    FormerSpouse,
+    FormerConcubinist,
+    FormerConcubine,
+    Concubine,
 }
 
 /// 完整扫描人物容器：统计总数/死亡数，并提取每个角色的完整记录。
@@ -804,12 +844,28 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                     } else if line_opens_key(t, K_SPOUSE) {
                         list = Some(ListKind::Spouse);
                         list_depth = depth;
+                    } else if line_opens_key(t, K_FORMER_SPOUSES) {
+                        list = Some(ListKind::FormerSpouse);
+                        list_depth = depth;
+                    } else if line_opens_key(t, K_FORMER_CONCUBINISTS) {
+                        list = Some(ListKind::FormerConcubinist);
+                        list_depth = depth;
+                    } else if line_opens_key(t, K_FORMER_CONCUBINES) {
+                        list = Some(ListKind::FormerConcubine);
+                        list_depth = depth;
+                    } else if line_opens_key(t, K_CONCUBINE) {
+                        list = Some(ListKind::Concubine);
+                        list_depth = depth;
                     } else {
                         if let Some(v) = extract_kv(t, K_CHILD) {
                             c.children.push(v);
                         }
                         if let Some(v) = extract_kv(t, K_SPOUSE) {
                             c.spouses.push(v);
+                        }
+                        // concubine 也可写成标量多行（一人多妾），与块列表等价。
+                        if let Some(v) = extract_kv(t, K_CONCUBINE) {
+                            c.concubines.push(v);
                         }
                         if c.primary_spouse.is_none() {
                             c.primary_spouse = extract_kv(t, K_PRIMARY_SPOUSE);
@@ -818,6 +874,12 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                             && let Some(v) = extract_kv(t, K_REAL_FATHER)
                         {
                             c.real_father = Some(v);
+                        }
+                        if c.betrothed.is_none() {
+                            c.betrothed = extract_kv(t, K_BETROTHED);
+                        }
+                        if c.concubinist.is_none() {
+                            c.concubinist = extract_kv(t, K_CONCUBINIST);
                         }
                     }
                 } else if sub == Some(SubBlock::Dead) && depth == sub_depth + 1 {
@@ -842,6 +904,10 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                             ListKind::Child => c.children.push(tok),
                             ListKind::Spouse => c.spouses.push(tok),
                             ListKind::Traits => c.traits.push(tok),
+                            ListKind::FormerSpouse => c.former_spouses.push(tok),
+                            ListKind::FormerConcubinist => c.former_concubinists.push(tok),
+                            ListKind::FormerConcubine => c.former_concubines.push(tok),
+                            ListKind::Concubine => c.concubines.push(tok),
                         }
                     }
                 }
@@ -1470,6 +1536,256 @@ fn scan_titles(text: &str) -> TitlesOutput {
     }
 }
 
+// ----------------------------------------------------------------------------
+// M4：记忆 —— character_memory_manager.database（存档级全局库）
+//
+// 条目形如 `16777233={ type="battle_won_memory" participants={ ruler=10433 } … }`：
+// id 是全局计数器（非连续，含 `28674=none` 之类已清除槽位）；记忆归属不能从 id
+// 解码，只忠实抄录 type / participants / 日期 / battle 位置，归属交由 Python 侧
+// 按「主体角色表」判定。容器缺失时给出告警，不伪造。
+// ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct RoleRef {
+    /// 参与角色（如 ruler/spouse/child；占位表构建下可能是 tXXXX，原样保留）。
+    role: String,
+    character_id: String,
+}
+
+#[derive(Serialize)]
+struct MemoryEntry {
+    id: String,
+    memory_type: String,
+    participants: Vec<RoleRef>,
+    creation_date: Option<String>,
+    end_date: Option<String>,
+    /// battle 记忆的战场省 id（由 variables 内 flag=="battle_location" 提取）。
+    battle_location_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct MemoriesOutput {
+    schema_version: u32,
+    reader_version: String,
+    scan_ms: f64,
+    memory_count: usize,
+    memories: Vec<MemoryEntry>,
+    warnings: Vec<String>,
+}
+
+/// 在块中查找任一候选键（真实名 / 占位 token），返回第一个命中的值起点。
+fn find_kv_any(block: &str, keys: &[&str]) -> Option<usize> {
+    keys.iter().find_map(|k| find_kv(block, k))
+}
+
+/// 取 `key={ ... }` 块的内部文本（去掉外层花括号）。找不到或非块则 None。
+fn extract_kv_block_any<'a>(block: &'a str, keys: &[&str]) -> Option<&'a str> {
+    let pos = find_kv_any(block, keys)?;
+    let s = &block[pos..];
+    let open = s.find('{')?;
+    let (b, _) = extract_balanced(s, open)?;
+    if b.len() >= 2 {
+        Some(&b[1..b.len() - 1])
+    } else {
+        None
+    }
+}
+
+/// 取 `key="value"` 的引号值（先尝试真实名，再试占位 token）。
+fn grab_quoted_any(block: &str, keys: &[&str]) -> Option<String> {
+    for k in keys {
+        if let Some(pos) = find_kv(block, k)
+            && let Some(inner) = block[pos..].strip_prefix('"')
+            && let Some(e) = inner.find('"')
+        {
+            return Some(inner[..e].to_string());
+        }
+    }
+    None
+}
+
+/// 取 `key=YYYY.MM.DD` 的日期值（两种 token 形态都试）。
+fn grab_date_any(block: &str, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| {
+        let pos = find_kv(block, k)?;
+        parse_date_at(block, pos).map(|(d, _)| d)
+    })
+}
+
+/// 解析 participants 块内全部 `role=character_id` 行。
+fn parse_participants(inner: &str) -> Vec<RoleRef> {
+    let mut out = Vec::new();
+    for line in inner.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('{') || t.starts_with('}') {
+            continue;
+        }
+        if let Some(eq) = t.find('=') {
+            let role = t[..eq].trim().trim_matches('"').to_string();
+            let val = t[eq + 1..].trim().trim_matches('"').to_string();
+            if !role.is_empty() && !val.is_empty() {
+                out.push(RoleRef {
+                    role,
+                    character_id: val,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 从 variables 中提取战场省 id：查找 `flag="battle_location"`（占位表形态 t0384=）后的
+/// `identity=NUMBER`。
+fn grab_battle_location(blk: &str) -> Option<String> {
+    let vars = extract_kv_block_any(blk, K_VARIABLES)?;
+    let flag_off = vars
+        .find("flag=\"battle_location\"")
+        .or_else(|| vars.find("t0384=\"battle_location\""))?;
+    let rest = &vars[flag_off..];
+    let pos = find_kv_any(rest, K_IDENTITY)?;
+    let digits: String = rest[pos..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(digits)
+    }
+}
+
+/// 解析单条记忆块。type 缺失视为异常条目（返回 None 跳过，不伪造）。
+fn parse_memory_block(id: &str, blk: &str) -> Option<MemoryEntry> {
+    let memory_type = grab_quoted_any(blk, K_TYPE)
+        .or_else(|| find_kv_any(blk, K_TYPE).and_then(|p| read_token(blk, p)))?;
+    let participants = extract_kv_block_any(blk, K_PARTICIPANTS)
+        .map(parse_participants)
+        .unwrap_or_default();
+    Some(MemoryEntry {
+        id: id.to_string(),
+        memory_type,
+        participants,
+        creation_date: grab_date_any(blk, K_CREATION_DATE),
+        end_date: grab_date_any(blk, K_END_DATE),
+        battle_location_id: grab_battle_location(blk),
+    })
+}
+
+/// 定位 character_memory_manager.database 容器的内部文本。
+fn find_memory_database_inner(text: &str) -> Option<&str> {
+    // 顶层 container 只出现一次（实测确认）；database 是其直接子容器。
+    let (mm_block, _) = find_container_block(text, K_MEMORY_MANAGER)?;
+    let (db_block, _) = find_container_block(mm_block, K_DATABASE)?;
+    if db_block.len() >= 2 {
+        Some(&db_block[1..db_block.len() - 1])
+    } else {
+        None
+    }
+}
+
+/// 在 text 中查找第一个 `key={` 容器（真实名 / 占位 token 双候选），返回配平块。
+fn find_container_block<'a>(text: &'a str, keys: &[&str]) -> Option<(&'a str, usize)> {
+    let bytes = text.as_bytes();
+    for key in keys {
+        let mut from = 0;
+        while let Some(off) = text[from..].find(key) {
+            let idx = from + off;
+            let after = idx + key.len();
+            // 独立键：前导字符不是标识符字符。
+            let prev_ok = idx == 0
+                || !matches!(
+                    bytes.get(idx - 1),
+                    Some(b) if b.is_ascii_alphanumeric() || *b == b'_'
+                );
+            let mut j = after;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if prev_ok && j < bytes.len() && bytes[j] == b'=' {
+                let mut k2 = j + 1;
+                while k2 < bytes.len() && (bytes[k2] == b' ' || bytes[k2] == b'\t') {
+                    k2 += 1;
+                }
+                if k2 < bytes.len()
+                    && bytes[k2] == b'{'
+                    && let Some((block, end)) = extract_balanced(text, k2)
+                {
+                    return Some((block, end));
+                }
+            }
+            from = after;
+        }
+    }
+    None
+}
+
+fn scan_memories(text: &str) -> MemoriesOutput {
+    let started = Instant::now();
+    let mut memories = Vec::new();
+    let mut warnings = Vec::new();
+    match find_memory_database_inner(text) {
+        Some(inner) => {
+            let bytes = inner.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                // 条目：NUMBER={ ... }（id 为全局计数器，非连续；`NUMBER=none` 是已清除槽位）。
+                if !bytes[i].is_ascii_digit() {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let id = &inner[start..i];
+                let mut j = i;
+                while j < bytes.len()
+                    && (bytes[j] == b' '
+                        || bytes[j] == b'\t'
+                        || bytes[j] == b'\n'
+                        || bytes[j] == b'\r')
+                {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'=' {
+                    let mut k2 = j + 1;
+                    while k2 < bytes.len()
+                        && (bytes[k2] == b' '
+                            || bytes[k2] == b'\t'
+                            || bytes[k2] == b'\n'
+                            || bytes[k2] == b'\r')
+                    {
+                        k2 += 1;
+                    }
+                    if k2 < bytes.len()
+                        && bytes[k2] == b'{'
+                        && let Some((blk, end)) = extract_balanced(inner, k2)
+                    {
+                        if let Some(entry) = parse_memory_block(id, blk) {
+                            memories.push(entry);
+                        }
+                        i = end;
+                        continue;
+                    }
+                }
+                i = j.max(start + 1);
+            }
+        }
+        None => {
+            warnings.push("container_not_found: character_memory_manager.database 未找到".into());
+        }
+    }
+    let scan_ms = started.elapsed().as_secs_f64() * 1000.0;
+    MemoriesOutput {
+        schema_version: 1,
+        reader_version: env!("CARGO_PKG_VERSION").to_string(),
+        scan_ms,
+        memory_count: memories.len(),
+        memories,
+        warnings,
+    }
+}
+
 fn scan_entities(text: &str) -> EntitiesOutput {
     let started = Instant::now();
     let mut acc = EntityAcc::default();
@@ -1904,6 +2220,10 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
     let titles = scan_titles(&text);
     write_json_compact(cache_dir.join("titles.json"), &titles)?;
 
+    // memories.json（M4 记忆库：character_memory_manager.database 的 id/type/participants/dates/battle 位置）
+    let memories = scan_memories(&text);
+    write_json_compact(cache_dir.join("memories.json"), &memories)?;
+
     // characters.ndjson + character-offsets.json
     let ndjson_path = cache_dir.join("characters.ndjson");
     let offsets_path = cache_dir.join("character-offsets.json");
@@ -2020,6 +2340,16 @@ fn cmd_titles(cache_dir: &Path) -> Result<(), String> {
     let p = cache_dir.join("titles.json");
     let text = fs::read_to_string(&p)
         .map_err(|e| format!("读取 titles.json 失败（缓存可能不存在，请先 prepare）: {e}"))?;
+    print_raw(&text)
+}
+
+/// 读取 prepare 生成的 memories.json（M4 记忆库，不重新 melt）。
+///
+/// 正常链路里 Python 侧直接读缓存文件；这个子命令用于人工排查与 CI 冒烟。
+fn cmd_memories(cache_dir: &Path) -> Result<(), String> {
+    let p = cache_dir.join("memories.json");
+    let text = fs::read_to_string(&p)
+        .map_err(|e| format!("读取 memories.json 失败（缓存可能不存在，请先 prepare）: {e}"))?;
     print_raw(&text)
 }
 
@@ -2606,6 +2936,7 @@ fn main() {
         && cmd != "meta"
         && cmd != "entities"
         && cmd != "titles"
+        && cmd != "memories"
         && cmd != "characters"
         && cmd != "character"
     {
@@ -2620,6 +2951,7 @@ fn main() {
         "meta" => cmd_meta(path),
         "entities" => cmd_entities(path),
         "titles" => cmd_titles(path),
+        "memories" => cmd_memories(path),
         "characters" => {
             let (offset, limit, query, _) = parse_flags(&args[3..]);
             cmd_characters(path, offset, limit, &query)
@@ -3323,5 +3655,141 @@ landed_titles={
                 .iter()
                 .any(|w| w.contains("container_not_found"))
         );
+    }
+
+    // ========================================================================
+    // 测试：M4 记忆扫描器
+    // —— 直接用 melt 明文片段喂 scan_memories，验证容器定位 / 条目 id（全局计数器、
+    // 非连续、含 none 槽位）/ participants 多角色 / 日期 / battle_location 提取 /
+    // 无日期容忍 / 占位 token 形态 / 缺失容器告警。不依赖真实存档。
+    // ========================================================================
+    const SAMPLE_MEMORIES: &str = r#"
+character_memory_manager={
+  database={
+    0={
+      type="became_soulmates"
+      participants={
+        new_soulmate=6039
+      }
+      creation_date=735.1.1
+      end_date=890.1.1
+    }
+    16777233={
+      type="battle_won_memory"
+      participants={
+        loser=10433
+        ruler=10433
+      }
+      creation_date=757.2.18
+      end_date=887.2.18
+      variables={
+        data={
+          {
+            flag="battle_location"
+            data={
+              type=prov
+              identity=6473
+            }
+          }
+        }
+      }
+    }
+    28674=none
+    28675={
+      type="friend_died"
+      participants={
+        dead_relation=16785898
+      }
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn scan_memories_parses_entries_participants_dates_and_battle_location() {
+        let out = scan_memories(SAMPLE_MEMORIES);
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        // none 槽位 28674 被跳过，共 3 条有效记忆。
+        assert_eq!(out.memory_count, 3);
+        assert_eq!(out.memories.len(), 3);
+
+        let soulmate = out
+            .memories
+            .iter()
+            .find(|m| m.id == "0")
+            .expect("entry 0 present");
+        assert_eq!(soulmate.memory_type, "became_soulmates");
+        assert_eq!(soulmate.creation_date.as_deref(), Some("735.1.1"));
+        assert_eq!(soulmate.end_date.as_deref(), Some("890.1.1"));
+        assert_eq!(soulmate.battle_location_id, None);
+        assert_eq!(soulmate.participants.len(), 1);
+        assert_eq!(soulmate.participants[0].role, "new_soulmate");
+        assert_eq!(soulmate.participants[0].character_id, "6039");
+
+        let battle = out
+            .memories
+            .iter()
+            .find(|m| m.id == "16777233")
+            .expect("battle entry present");
+        assert_eq!(battle.memory_type, "battle_won_memory");
+        // 多角色：loser 与 ruler 指向同一人，两个都保留（不合并）。
+        assert_eq!(battle.participants.len(), 2);
+        assert_eq!(battle.participants[0].role, "loser");
+        assert_eq!(battle.participants[1].role, "ruler");
+        assert_eq!(battle.participants[0].character_id, "10433");
+        assert_eq!(battle.battle_location_id.as_deref(), Some("6473"));
+    }
+
+    #[test]
+    fn scan_memories_tolerates_missing_dates() {
+        let out = scan_memories(SAMPLE_MEMORIES);
+        let died = out
+            .memories
+            .iter()
+            .find(|m| m.id == "28675")
+            .expect("entry 28675 present");
+        assert_eq!(died.memory_type, "friend_died");
+        assert_eq!(died.creation_date, None);
+        assert_eq!(died.end_date, None);
+        assert_eq!(died.participants[0].role, "dead_relation");
+        assert_eq!(died.participants[0].character_id, "16785898");
+    }
+
+    #[test]
+    fn scan_memories_warns_when_container_missing() {
+        let out = scan_memories("version=1.19.0.6\ncharacter_database={ }");
+        assert_eq!(out.memory_count, 0);
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("container_not_found"))
+        );
+    }
+
+    #[test]
+    fn scan_memories_handles_placeholder_token_container() {
+        let sample = r#"
+t3604={
+  t05ab={
+    5={
+      t00e1="became_friends"
+      t282a={
+        new_relation=7083
+      }
+      t347b=736.1.1
+      t0cd6=891.1.1
+    }
+  }
+}
+"#;
+        let out = scan_memories(sample);
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        assert_eq!(out.memory_count, 1);
+        let m = &out.memories[0];
+        assert_eq!(m.id, "5");
+        assert_eq!(m.memory_type, "became_friends");
+        assert_eq!(m.participants[0].role, "new_relation");
+        assert_eq!(m.creation_date.as_deref(), Some("736.1.1"));
+        assert_eq!(m.end_date.as_deref(), Some("891.1.1"));
     }
 }

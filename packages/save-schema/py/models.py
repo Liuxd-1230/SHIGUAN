@@ -96,12 +96,18 @@ class Encoding(str, Enum):
 
 
 class RelationshipType(str, Enum):
-    """关系类型（替换原先退化的任意字符串字段）。"""
+    """关系类型（替换原先退化的任意字符串字段）。
+
+    M4：新增 betrothed（婚约）与 concubine（妾室），与 spouse 并列——
+    CK3 存档分别以 primary_spouse / former_spouses / betrothed / concubine 字段直述。
+    """
     SPOUSE = "spouse"
     LOVER = "lover"
     FRIEND = "friend"
     RIVAL = "rival"
     MURDERER = "murderer"
+    BETROTHED = "betrothed"
+    CONCUBINE = "concubine"
     OTHER = "other"
 
 
@@ -236,6 +242,9 @@ class RelationshipPeriod(BaseModel):
     end: Optional[str] = None
     confidence: Confidence
     sourcePath: Optional[str] = None
+    # M4：存档直述的"前任"关系（former_spouses / former_concubines）语义——
+    # 与现任区分，避免把前配偶显示成当前配偶。
+    isFormer: Optional[bool] = None
 
 
 class WarParticipation(BaseModel):

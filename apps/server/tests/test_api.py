@@ -172,6 +172,47 @@ def test_character_titles(real_save_id):
 
 
 @pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
+def test_character_memories(real_save_id):
+    """M4 真实存档集成：memories 端点 + 档案记忆/关系 + 婚姻历史语义。"""
+    r = client.post(f"/api/local-saves/{real_save_id}/parse")
+    assert r.status_code == 200
+    # 12659：family_data spouse=9536/43537、former_spouses=[9536]，且有两段 married 记忆。
+    r2 = client.get(f"/api/local-saves/{real_save_id}/characters/12659/memories")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["characterId"] == "12659"
+    assert body["memoryCount"] > 0
+    marriage_memories = [m for m in body["memories"] if m["type"] == "marriage"]
+    assert marriage_memories, "12659 应有 marriage 记忆（family_data 交叉核对归属）"
+    # 记忆总量与跳过类型（imprisoned/ascended_throne 等 owner 非 participant 诚实跳过）。
+    assert body["memoryCount"] > 0
+    assert body["skippedTypeCount"] > 0
+    for m in marriage_memories:
+        assert m["relatedCharacters"], "婚姻记忆应能指名对方（spouse 交叉核对）"
+        assert m["sourcePath"] and "character_memory_manager" in m["sourcePath"]
+    # 档案：spouses 含 former（isFormer=True）+ memories + 关系字段齐全。
+    r3 = client.get(f"/api/saves/{real_save_id}/characters/12659")
+    assert r3.status_code == 200
+    prof = r3.json()
+    spouse_ids = {s["characterId"]: s for s in prof["spouses"]}
+    # former_spouses=[9536] → isFormer=True；现任 spouse=43537 → isFormer 非 True。
+    if "9536" in spouse_ids:
+        assert spouse_ids["9536"].get("isFormer") is True
+    if "43537" in spouse_ids:
+        assert not spouse_ids["43537"].get("isFormer")
+    assert prof["spouses"], "spouses 不应为空"
+    assert prof["memories"], "memories 不应为空"
+    # 所有时间线事件（含记忆事件）都必须带 EvidenceRef（0 事件缺证据）。
+    for e in prof["timeline"]:
+        assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+    # 关系：became_soulmates 同日期成对 → 6039 与 4927 互为恋人（推断）。
+    r4 = client.get(f"/api/local-saves/{real_save_id}/characters/6039/memories")
+    assert r4.status_code == 200
+    lovers = r4.json()["relationships"]["lovers"]
+    assert any(l["id"] == "4927" for l in lovers), f"6039 应有推断恋人 4927，实际 {lovers}"
+
+
+@pytest.mark.skipif(not HAVE_FULL, reason="需要 ck3-reader 与真实存档样本")
 def test_delete_save(real_save_id):
     r = client.delete(f"/api/saves/{real_save_id}")
     assert r.status_code == 200
