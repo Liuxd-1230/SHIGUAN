@@ -8,7 +8,7 @@ import json
 import threading
 from pathlib import Path
 
-from app.services.session_manager import ParseSession, SessionManager
+from app.services.session_manager import CACHE_SCHEMA_VERSION, ParseSession, SessionManager
 
 
 class FakeAdapter:
@@ -32,7 +32,7 @@ class FakeAdapter:
             # M3.1：_cache_valid 要求 reader_version 存在，模拟新版 reader 产物。
             "reader_version": "0.1.0-test",
             # Phase 3A.1：cache schema 版本显式化（与 session_manager 常量一致）。
-            "cache_schema_version": "2",
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
         }
         (cache_dir / "meta.json").write_text(json.dumps(meta), encoding="utf-8")
         (cache_dir / "mods.json").write_text(json.dumps({"mods": meta["mods"]}), encoding="utf-8")
@@ -68,19 +68,19 @@ class FakeAdapter:
         (cache_dir / "characters.ndjson").write_text("\n".join(buf) + "\n", encoding="utf-8")
         (cache_dir / "character-offsets.json").write_text(json.dumps(offsets), encoding="utf-8")
         (cache_dir / "manifest.json").write_text(
-            json.dumps({"signature": cache_dir.name, "cache_schema_version": "2"}),
+            json.dumps({"signature": cache_dir.name, "cache_schema_version": CACHE_SCHEMA_VERSION}),
             encoding="utf-8",
         )
         # M2/M3 缓存产物：entities.json（实体索引）与 titles.json（头衔）——SessionManager
         # _cache_valid 要求这两个文件存在才视为缓存完整，重启后可复用。
         # Phase 3A.1：5 个缓存文件都必须带同一 cache_schema_version，缺一则整体失效。
         (cache_dir / "entities.json").write_text(
-            json.dumps({"schema_version": 1, "kinds": {}, "cache_schema_version": "2"}),
+            json.dumps({"schema_version": 1, "kinds": {}, "cache_schema_version": CACHE_SCHEMA_VERSION}),
             encoding="utf-8",
         )
         (cache_dir / "titles.json").write_text(
             json.dumps(
-                {"schema_version": 1, "title_count": 0, "titles": [], "cache_schema_version": "2"}
+                {"schema_version": 1, "title_count": 0, "titles": [], "cache_schema_version": CACHE_SCHEMA_VERSION}
             ),
             encoding="utf-8",
         )
@@ -91,7 +91,7 @@ class FakeAdapter:
                     "schema_version": 1,
                     "memory_count": 0,
                     "memories": [],
-                    "cache_schema_version": "2",
+                    "cache_schema_version": CACHE_SCHEMA_VERSION,
                 }
             ),
             encoding="utf-8",

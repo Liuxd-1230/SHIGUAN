@@ -24,7 +24,9 @@ from app.services.save_registry import SaveStillWritingError
 
 # Phase 3A.1：cache schema 版本（与 Rust 侧 CACHE_SCHEMA_VERSION 保持一致）。
 # 扫描/提取行为变更时递增，旧缓存（无此字段或值不匹配）自动失效重建。
-CACHE_SCHEMA_VERSION = "2"
+# v3（3C-Audit）：titles.json history 条目新增 raw_type（存档显式 type 原样保留），
+# 并修复 Format A 行尾跳跃丢条（明文存档 history 多条目同行），旧缓存需重建。
+CACHE_SCHEMA_VERSION = "3"
 
 
 @dataclass

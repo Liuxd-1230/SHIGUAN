@@ -178,14 +178,116 @@ def test_office_appointment_event_mapping():
 
 def test_acquisition_cause_resolver_missing_entry():
     r = AcquisitionCauseResolver()
-    cause, conf, constraints = r.resolve(None, "950.1.1")
+    cause, conf, constraints, raw, src = r.resolve(None, "950.1.1")
     assert cause == AcquisitionCause.UNKNOWN
     assert conf == Confidence.UNCERTAIN
     assert constraints
+    assert raw is None
+    assert src.value == "unknown"
 
 
 def test_acquisition_cause_resolver_destroyed_not_cause():
     r = AcquisitionCauseResolver()
     entry = _entry("k_x", history=[{"date": "950.1.1", "holder_id": None, "kind": "destroyed"}])
-    cause, conf, _ = r.resolve(entry, "950.1.1")
+    cause, conf, _, raw, src = r.resolve(entry, "950.1.1")
     assert cause == AcquisitionCause.UNKNOWN
+    assert src.value == "reader_default"
+
+
+def test_acquisition_cause_resolver_save_explicit_conquest():
+    """3C-Audit：存档显式 type=conquest → 确认征服（save_explicit），不再一律 unknown。"""
+    r = AcquisitionCauseResolver()
+    entry = _entry(
+        "c_mayo",
+        history=[
+            {
+                "date": "953.11.18",
+                "holder_id": "25990",
+                "kind": "other",
+                "raw_type": "conquest",
+            }
+        ],
+    )
+    cause, conf, constraints, raw, src = r.resolve(entry, "953.11.18")
+    assert cause == AcquisitionCause.CONQUEST
+    assert conf == Confidence.CONFIRMED
+    assert not constraints  # 显式 type 不再套「不得推断因果」约束
+    assert raw == "conquest"
+    assert src.value == "save_explicit"
+
+
+def test_acquisition_cause_resolver_save_explicit_granted_and_usurped():
+    r = AcquisitionCauseResolver()
+    for raw, want in (
+        ("granted", AcquisitionCause.GRANT),
+        ("conquest_holy_war", AcquisitionCause.CONQUEST),
+        ("conquest_claim", AcquisitionCause.CONQUEST),
+        ("conquest_populist", AcquisitionCause.CONQUEST),
+        ("usurped", AcquisitionCause.USURPATION),
+    ):
+        entry = _entry(
+            "c_x",
+            history=[{"date": "950.1.1", "holder_id": "p2", "kind": "other", "raw_type": raw}],
+        )
+        cause, conf, constraints, rraw, src = r.resolve(entry, "950.1.1")
+        assert cause == want, f"{raw} → {cause}"
+        assert conf == Confidence.CONFIRMED
+        assert rraw == raw
+        assert src.value == "save_explicit"
+
+
+def test_acquisition_cause_resolver_save_explicit_unmapped_keeps_raw():
+    """3C-Audit：显式 type 但暂无映射（appointment_succession）→ 保留 raw，不擅自归并。"""
+    r = AcquisitionCauseResolver()
+    entry = _entry(
+        "k_viet",
+        history=[
+            {
+                "date": "955.1.22",
+                "holder_id": "20423",
+                "kind": "other",
+                "raw_type": "appointment_succession",
+            }
+        ],
+    )
+    cause, conf, constraints, raw, src = r.resolve(entry, "955.1.22")
+    assert cause == AcquisitionCause.UNKNOWN
+    assert raw == "appointment_succession"
+    assert src.value == "save_explicit"
+    assert any("不得推断" in c for c in constraints)
+
+
+def test_acquisition_cause_resolver_legacy_created_is_reader_default():
+    """旧缓存（无 raw_type）：kind=created 仍可证创建，但标记 reader_default。"""
+    r = AcquisitionCauseResolver()
+    entry = _entry("k_x", history=[{"date": "950.1.1", "holder_id": "p2", "kind": "created"}])
+    cause, conf, constraints, raw, src = r.resolve(entry, "950.1.1")
+    assert cause == AcquisitionCause.CREATION
+    assert conf == Confidence.CONFIRMED
+    assert raw == "created"
+    assert src.value == "reader_default"
+
+
+def test_builder_passes_raw_type_into_semantic_event():
+    """3C-Audit：语义事件带出 acquisitionRawType / acquisitionTypeSource（契约可追溯）。"""
+    entries = [
+        _entry(
+            "c_mayo",
+            tier="county",
+            liege=None,
+            name="梅奥",
+            name_source="save",
+            history=[
+                {"date": "953.11.18", "holder_id": "p1", "kind": "other", "raw_type": "conquest"}
+            ],
+        )
+    ]
+    periods = [_period("c_mayo", "梅奥", start="953.11.18", current=True)]
+    sem_events, _ = _builder(entries).build(periods)
+    gain = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gain) == 1
+    assert gain[0].acquisitionCause == AcquisitionCause.CONQUEST
+    assert gain[0].acquisitionRawType == "conquest"
+    assert gain[0].acquisitionTypeSource.value == "save_explicit"
+    # 证据描述如实提及存档显式 type。
+    assert any("type=conquest" in ev.description for ev in gain[0].evidence)

@@ -13,11 +13,18 @@
   - 宣称 → claim_gained / claim_lost；
   - 领地被创建/消灭 → realm_created / realm_destroyed。
 
-`AcquisitionCauseResolver` 的诚实性原则：
-  - titles.json 只记录 holder 变更（kind=created/destroyed/holder/other），
-    **没有**战争→头衔、继承→头衔的关联字段；
-  - 只有 kind=created 可直接证实「创建」，其余一律 AcquisitionCause.UNKNOWN，
-    并输出 narrativeConstraint「不得推断因果」—— 时间相近绝不推断因果。
+`AcquisitionCauseResolver` 的诚实性原则（3C-Audit 修订）：
+  - 存档 history 条目**显式记录**获得 type（实测：created / destroyed / granted /
+    conquest / conquest_claim / conquest_populist / conquest_holy_war /
+    appointment_succession / appointment / migration / revoked / stepped_down /
+    abdication / faction_demand / swear_fealty / independency / leased_out /
+    returned），reader 自 CACHE_SCHEMA_VERSION=3 起把该 type 以 `raw_type`
+    原样保留进 titles.json；
+  - 只有**存档显式 type** 才确认原因（conquest*→征服、granted→册封、
+    created→创建、usurped→篡位），并标记 type_source=save_explicit；
+  - 只有 holder 变更（无 type）→ AcquisitionCause.UNKNOWN + 叙事约束
+    「不得推断因果」—— 时间相近绝不推断继承/征服/册封；
+  - 旧缓存（无 raw_type）仅 kind=created 可证「创建」，标 reader_default。
 """
 from __future__ import annotations
 
@@ -26,6 +33,7 @@ from typing import Dict, List, Optional, Tuple
 
 from models import (
     AcquisitionCause,
+    AcquisitionTypeSource,
     Confidence,
     EntityRef,
     EvidenceRef,
@@ -97,6 +105,22 @@ _CONSTRAINT_UNKNOWN_CAUSE = (
     "存档未记录该头衔获得的途径，不得推断为继承、征服、册封等具体原因。"
 )
 
+# 3C-Audit：存档显式 type → AcquisitionCause 的确定性映射（仅当该 type 出现在
+# 存档 history 条目中才成立；绝不从文件名或对照项目默认值推断）。
+# 存档实测（593a2ec6…956.12.28）出现的 type：created / destroyed / granted /
+# conquest / conquest_claim / conquest_populist / conquest_holy_war /
+# appointment_succession / appointment / migration / revoked / stepped_down /
+# abdication / faction_demand / swear_fealty / independency / leased_out / returned。
+_RAW_TYPE_TO_CAUSE = {
+    "conquest": AcquisitionCause.CONQUEST,
+    "conquest_claim": AcquisitionCause.CONQUEST,
+    "conquest_populist": AcquisitionCause.CONQUEST,
+    "conquest_holy_war": AcquisitionCause.CONQUEST,
+    "granted": AcquisitionCause.GRANT,
+    "created": AcquisitionCause.CREATION,
+    "usurped": AcquisitionCause.USURPATION,
+}
+
 
 @dataclass
 class _Change:
@@ -110,39 +134,69 @@ class _Change:
 
 
 class AcquisitionCauseResolver:
-    """头衔获得原因解析（诚实性：除 created 直接证实外一律 unknown）。"""
+    """头衔获得原因解析（诚实性：只认存档显式 type，绝不默认推断）。"""
 
     def resolve(
         self, entry: Optional[dict], date: str
-    ) -> Tuple[AcquisitionCause, Confidence, List[str]]:
-        """返回 (cause, confidence, narrative_constraints)。
+    ) -> Tuple[AcquisitionCause, Confidence, List[str], Optional[str], AcquisitionTypeSource]:
+        """返回 (cause, confidence, narrative_constraints, raw_type, type_source)。
 
         entry 为 titles.json 中该头衔的原始条目（含 history）；缺失 → UNKNOWN。
-        kind=created 的 history 记录可证实「创建」；其余一律 UNKNOWN。
+        优先使用 history 条目里的 `raw_type`（3C-Audit 起 reader 原样保留的存档
+        显式 type，如 conquest/granted/created/usurped）；旧缓存无 raw_type 时
+        回退到粗粒度 `kind`（created/destroyed），type_source 标 reader_default。
+        只有 holder 变更（无显式 type）→ UNKNOWN，绝不因时间相近推断继承/征服。
         """
         if entry is None:
             return (
                 AcquisitionCause.UNKNOWN,
                 Confidence.UNCERTAIN,
                 [_CONSTRAINT_UNKNOWN_CAUSE],
+                None,
+                AcquisitionTypeSource.UNKNOWN,
             )
         for h in entry.get("history") or []:
             if str(h.get("date")) != str(date):
                 continue
+            raw = h.get("raw_type")
+            if raw is not None:
+                cause = _RAW_TYPE_TO_CAUSE.get(str(raw))
+                if cause is not None:
+                    # 存档显式 type 直接证实获得原因（如 conquest → 征服）。
+                    return cause, Confidence.CONFIRMED, [], str(raw), AcquisitionTypeSource.SAVE_EXPLICIT
+                # 显式 type 但暂无可信映射：如实保留原始字符串，不得擅自归并。
+                return (
+                    AcquisitionCause.UNKNOWN,
+                    Confidence.INFERRED,
+                    [_CONSTRAINT_UNKNOWN_CAUSE],
+                    str(raw),
+                    AcquisitionTypeSource.SAVE_EXPLICIT,
+                )
             kind = h.get("kind")
             if kind == "created":
-                return AcquisitionCause.CREATION, Confidence.CONFIRMED, []
+                # 旧缓存（无 raw_type）：reader 从存档 type=created 映射而来。
+                return (
+                    AcquisitionCause.CREATION,
+                    Confidence.CONFIRMED,
+                    [],
+                    "created",
+                    AcquisitionTypeSource.READER_DEFAULT,
+                )
             if kind == "destroyed":
                 # 该日条目是销毁记录，不能作为“获得原因”。
                 return (
                     AcquisitionCause.UNKNOWN,
                     Confidence.UNCERTAIN,
                     [_CONSTRAINT_UNKNOWN_CAUSE],
+                    "destroyed",
+                    AcquisitionTypeSource.READER_DEFAULT,
                 )
         return (
             AcquisitionCause.UNKNOWN,
             Confidence.INFERRED,
             [_CONSTRAINT_UNKNOWN_CAUSE],
+            None,
+            AcquisitionTypeSource.UNKNOWN,
         )
 
 
@@ -266,11 +320,13 @@ class HistoricalEventSemanticBuilder:
 
             # 因果解析（仅领地获得 / 主权身份转变）。
             cause: Optional[AcquisitionCause] = None
+            raw_type: Optional[str] = None
+            type_source: Optional[AcquisitionTypeSource] = None
             constraints: List[str] = []
             cause_conf = Confidence.CONFIRMED
             if stype in _CAUSE_TYPES and direction == "gain":
                 entry = self.entries.get(title_ids[0])
-                cause, cause_conf, constraints = self.causes.resolve(entry, date)
+                cause, cause_conf, constraints, raw_type, type_source = self.causes.resolve(entry, date)
 
             evidence = [
                 EvidenceRef(
@@ -279,7 +335,8 @@ class HistoricalEventSemanticBuilder:
                     sourcePath=f"{c.period.sourcePath}/history/{date}",
                     rawKey=f"history.{date}.holder",
                     description="landed_titles 历史记录中的持有者变更（该日" + (
-                        "起持有" if c.direction == "gain" else "止不再持有") + "）",
+                        "起持有" if c.direction == "gain" else "止不再持有") + (
+                        f"；存档显式记录 type={raw_type}" if raw_type else ""),
                     confidence=Confidence.CONFIRMED,
                 )
                 for c in group
@@ -299,6 +356,9 @@ class HistoricalEventSemanticBuilder:
                     sourceEventIds=[title_id],
                     narrativeConstraints=constraints,
                     acquisitionCause=cause,
+                    # 3C-Audit：保留存档显式 type 原始字符串与证据来源，绝不丢弃。
+                    acquisitionRawType=raw_type,
+                    acquisitionTypeSource=type_source,
                 )
             )
 

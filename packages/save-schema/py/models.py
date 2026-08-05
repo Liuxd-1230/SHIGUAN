@@ -263,6 +263,16 @@ class AcquisitionCause(str, Enum):
     UNKNOWN = "unknown"                          # 存档未记录，诚实留空
 
 
+class AcquisitionTypeSource(str, Enum):
+    """获得原因的证据来源（3C-Audit，与 acquisitionRawType 配套）。
+
+    严格区分「存档显式记录」与「工具默认推导」，绝不把默认值当存档事实。
+    """
+    SAVE_EXPLICIT = "save_explicit"   # 存档 history 条目显式记录 type（如 conquest/granted/created）
+    READER_DEFAULT = "reader_default" # reader/旧缓存从 kind 映射（历史缓存无 raw_type 时）
+    UNKNOWN = "unknown"               # 无任何显式 type，只能诚实留空
+
+
 # ---------------------------------------------------------------------------
 # 值对象
 # ---------------------------------------------------------------------------
@@ -483,6 +493,11 @@ class HistoricalSemanticEvent(BaseModel):
     # 叙事约束（如「存档未记录获得途径，不得推断继承/征服/册封」）。
     narrativeConstraints: List[str] = Field(default_factory=list)
     acquisitionCause: Optional[AcquisitionCause] = None
+    # 3C-Audit：存档 history 条目显式记录的原始 type 字符串（conquest/granted/…；
+    # 无显式 type 为 None）。绝不丢弃原始字符串，绝不把默认值当存档事实。
+    acquisitionRawType: Optional[str] = None
+    # 获得原因的证据来源（save_explicit / reader_default / unknown）。
+    acquisitionTypeSource: Optional[AcquisitionTypeSource] = None
 
 
 class FactRef(BaseModel):

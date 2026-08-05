@@ -481,6 +481,12 @@ export type AcquisitionCause =
   | "purchase"
   | "unknown";
 
+/** 获得原因的证据来源（3C-Audit，与 acquisitionRawType 配套；绝不把默认值当存档事实）。 */
+export type AcquisitionTypeSource =
+  | "save_explicit" // 存档 history 条目显式记录 type（conquest/granted/created）
+  | "reader_default" // reader/旧缓存从 kind 映射（历史缓存无 raw_type 时）
+  | "unknown"; // 无任何显式 type，只能诚实留空
+
 /** 单条头衔的语义分类结果（Phase 3C.2）。 */
 export interface TitleClassification {
   titleId: string;
@@ -527,6 +533,10 @@ export interface HistoricalSemanticEvent {
   /** 叙事约束（如「存档未记录获得途径，不得推断继承/征服/册封」）。 */
   narrativeConstraints?: string[];
   acquisitionCause?: AcquisitionCause;
+  /** 3C-Audit：存档 history 条目显式记录的原始 type 字符串（conquest/granted/…；无显式 type 为缺省）。 */
+  acquisitionRawType?: string;
+  /** 获得原因的证据来源（save_explicit / reader_default / unknown）。 */
+  acquisitionTypeSource?: AcquisitionTypeSource;
 }
 
 /** 一条可独立核验的事实（Phase 3C.5；确定性提炼，不是模型产出）。 */

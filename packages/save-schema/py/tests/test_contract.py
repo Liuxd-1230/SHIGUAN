@@ -50,6 +50,7 @@ from models import (  # noqa: E402
     FactCheckStatus,
     FactRef,
     FixtureEnvelope,
+    AcquisitionTypeSource,
     HistoricalSemanticEvent,
     HistoricalSemanticEventType,
     LifeEvent,
@@ -647,6 +648,27 @@ def test_historical_semantic_event_roundtrip():
     assert ev2.semanticType == HistoricalSemanticEventType.TERRITORIAL_GAIN
     assert ev2.acquisitionCause == AcquisitionCause.UNKNOWN
     assert ev2.date == "952.8.16"
+
+
+def test_historical_semantic_event_raw_type_roundtrip():
+    """3C-Audit：存档显式 history type（rawType）与证据来源必须在语义事件中往返。"""
+    ev = HistoricalSemanticEvent(
+        eventId="p1-1-title-gain-953.11.18",
+        semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+        date="953.11.18",
+        summary="梁某 于 953.11.18 获得以下领地：梅奥。",
+        relatedTitleIds=["c_mayo"],
+        confidence=Confidence.CONFIRMED,
+        sourceEventIds=["p1-title-gain-953.11.18"],
+        acquisitionCause=AcquisitionCause.CONQUEST,
+        acquisitionRawType="conquest",
+        acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+    )
+    dumped = ev.model_dump(mode="json")
+    ev2 = HistoricalSemanticEvent.model_validate(dumped)
+    assert ev2.acquisitionRawType == "conquest"
+    assert ev2.acquisitionTypeSource == AcquisitionTypeSource.SAVE_EXPLICIT
+    assert ev2.acquisitionCause == AcquisitionCause.CONQUEST
 
 
 def test_fact_ref_roundtrip():

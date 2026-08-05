@@ -53,7 +53,7 @@ use serde::Serialize;
 const ROOT: &[&str] = &["meta_data", "t3155"];
 // 缓存 schema 版本：Python 侧 _cache_valid 要求 meta.json 的 cache_schema_version
 // 与之一致。扫描/提取逻辑或 melt 行为变更时递增，强制旧缓存失效重建（防交叉复用）。
-const CACHE_SCHEMA_VERSION: &str = "2";
+const CACHE_SCHEMA_VERSION: &str = "3";
 const K_SAVE_VERSION: &[&str] = &["save_game_version", "t058f"];
 const K_GAME_VERSION: &[&str] = &["version", "t00ee"];
 const K_DATE: &[&str] = &["meta_date", "t3157"];
@@ -460,9 +460,9 @@ fn melt_save(data: &[u8]) -> Result<(Vec<u8>, usize), String> {
     let parsed = file
         .parse(&mut zip_sink)
         .map_err(|e| format!("parse 失败: {e}"))?;
-    let binary = parsed
-        .as_binary()
-        .ok_or_else(|| "存档格式无法识别（非 SAV0101/0103 二进制，也非 SAV0102 明文）".to_string())?;
+    let binary = parsed.as_binary().ok_or_else(|| {
+        "存档格式无法识别（非 SAV0101/0103 二进制，也非 SAV0102 明文）".to_string()
+    })?;
     let melter = binary.melter();
     let melted = melter
         .melt(&EnvTokens)
@@ -1063,11 +1063,7 @@ fn same_line_brace_ids(line: &str) -> Option<Vec<String>> {
         return None;
     }
     let ids = bare_id_tokens(&line[open + 1..close]);
-    if ids.is_empty() {
-        None
-    } else {
-        Some(ids)
-    }
+    if ids.is_empty() { None } else { Some(ids) }
 }
 
 /// 把已收集的裸 id 列表按类型写入人物记录（与主循环的列表体收集共用同一分发）。
@@ -1304,6 +1300,11 @@ struct TitleHistoryEntry {
     holder_id: Option<String>,
     /// holder | created | destroyed | other
     kind: String,
+    /// 存档 history 条目中显式记录的 type 原始字符串（如 conquest / granted /
+    /// appointment_succession / created / destroyed），未修改、原样保留。
+    /// Format A（date=ID 裸持有者变更）与无 type 的块为 None —— 绝不猜测。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_type: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1577,31 +1578,33 @@ fn parse_title_history(inner: &str) -> Vec<TitleHistoryEntry> {
                         date,
                         holder_id: holder,
                         kind: kind.to_string(),
+                        // 3C-Audit：保留存档显式 type 原始字符串（conquest/granted/…），
+                        // 供 Python 语义层按证据确认获得原因，不再把非 created/destroyed 一律抹平。
+                        raw_type: t,
                     });
                     i = end;
                     continue;
                 }
             } else {
                 // Format A：date=HOLDER_ID
-                let ds: String = inner[vstart..]
+                let step = inner[vstart..]
                     .chars()
                     .take_while(|c| c.is_ascii_digit())
-                    .collect();
+                    .count();
+                let ds: String = inner[vstart..vstart + step].to_string();
                 if !ds.is_empty() {
                     out.push(TitleHistoryEntry {
                         date,
                         holder_id: Some(ds),
                         kind: "holder".to_string(),
+                        raw_type: None,
                     });
                 }
-                let step = inner[vstart..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .count();
+                // 继续从数字后扫描下一个条目，**不**跳到行尾：
+                // 明文存档（TextZip 解压原文）的 history 常把多条写在同一行
+                // （如 `618.1.1=2068 755.1.1={ type=… holder=… }`），跳行会吞掉
+                // 同一行的后续条目 —— 真实存档曾丢约 2.1 万条（34,713 → 13,173）。
                 i = vstart + step;
-                while i < bytes.len() && bytes[i] != b'\n' {
-                    i += 1;
-                }
                 continue;
             }
         }
@@ -3772,6 +3775,88 @@ landed_titles={
         assert_eq!(byz.history[1].date, "900.5.20");
         assert_eq!(byz.history[1].kind, "created");
         assert_eq!(byz.history[1].holder_id.as_deref(), Some("9999"));
+        // 3C-Audit：Format B 保留存档显式 type 原样；Format A（裸持有者）raw_type=None。
+        assert_eq!(papal.history[0].raw_type.as_deref(), None);
+        assert_eq!(papal.history[2].raw_type.as_deref(), Some("destroyed"));
+        assert_eq!(byz.history[1].raw_type.as_deref(), Some("created"));
+    }
+
+    #[test]
+    fn scan_titles_preserves_raw_history_type() {
+        // 真实存档形态：history 内同时有 created / destroyed / conquest / granted /
+        // appointment_succession / revoked 等显式 type；raw_type 必须原样保留。
+        let sample = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="k_dali"
+      holder=20423
+      history={
+        618.1.1=2068
+        953.11.18={ type=conquest holder=25990 }
+        953.7.2={ type=granted holder=16811223 }
+        955.1.22={ type=appointment_succession holder=20423 }
+        956.1.1={ type=revoked holder=21711 }
+      }
+    }
+  }
+}
+"#;
+        let out = scan_titles(sample);
+        let t = &out.titles[0];
+        // 5 条全部保留（含与 Format A 同行的 Format B —— 行尾跳跃已修复）。
+        assert_eq!(t.history.len(), 5);
+        let by_type = |raw: &str| {
+            t.history
+                .iter()
+                .find(|h| h.raw_type.as_deref() == Some(raw))
+                .unwrap()
+        };
+        assert_eq!(by_type("conquest").holder_id.as_deref(), Some("25990"));
+        assert_eq!(by_type("conquest").kind, "other");
+        assert_eq!(by_type("granted").kind, "other");
+        assert_eq!(by_type("appointment_succession").kind, "other");
+        assert_eq!(by_type("revoked").kind, "other");
+        assert_eq!(by_type("conquest").date, "953.11.18");
+        // 裸 holder 变更 raw_type=None，绝不猜测类型。
+        assert_eq!(t.history[0].raw_type.as_deref(), None);
+        assert_eq!(t.history[0].kind, "holder");
+    }
+
+    #[test]
+    fn scan_titles_same_line_format_a_does_not_swallow_next_entry() {
+        // 明文存档（TextZip 解压原文）的 history 常把多条写在同一行：
+        // `618.1.1=2068 755.1.1={ type=appointment_succession holder=5356 }`
+        // 旧逻辑在 Format A 后跳到行尾，吞掉了同一行的 Format B —— 必须修复。
+        let sample = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="k_viet"
+      holder=20423
+      history={ 618.1.1=2068 755.1.1={ type=appointment_succession holder=5356 }
+        760.1.1={ type=appointment_succession holder=5356 }
+        952.8.16={ type=appointment_succession holder=20423 }
+      }
+    }
+  }
+}
+"#;
+        let out = scan_titles(sample);
+        let t = &out.titles[0];
+        assert_eq!(t.history.len(), 4);
+        assert_eq!(t.history[0].date, "618.1.1");
+        assert_eq!(t.history[0].kind, "holder");
+        // 与 Format A 同一行、随后同一行的 Format B 都必须被解析到。
+        assert_eq!(t.history[1].date, "755.1.1");
+        assert_eq!(t.history[1].holder_id.as_deref(), Some("5356"));
+        assert_eq!(
+            t.history[1].raw_type.as_deref(),
+            Some("appointment_succession")
+        );
+        assert_eq!(t.history[2].date, "760.1.1");
+        assert_eq!(t.history[3].date, "952.8.16");
+        assert_eq!(t.history[3].holder_id.as_deref(), Some("20423"));
     }
 
     #[test]
@@ -3990,7 +4075,8 @@ t3604={
         use std::io::Write;
         // kind 2（UnifiedText）：明文 meta + raw-deflate 压缩的完整 gamestate。
         let text = sample_gamestate_text();
-        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(text.as_bytes()).unwrap();
         let compressed = enc.finish().unwrap();
 
@@ -4005,7 +4091,10 @@ t3604={
         assert_eq!(unknown, 0);
         // 解压结果 = 头 + 完整 gamestate（meta 被解压块包含）。
         let full = String::from_utf8_lossy(&melted);
-        assert!(full.contains("meta_player_name=\"梁克贞\""), "应含 meta：{full}");
+        assert!(
+            full.contains("meta_player_name=\"梁克贞\""),
+            "应含 meta：{full}"
+        );
         assert!(full.contains("first_name=\"克贞\""), "应含人物：{full}");
         assert!(full.contains("dynasty_house=11527"));
     }
@@ -4015,7 +4104,8 @@ t3604={
         use std::io::Write;
         // 端到端：明文（kind 2）走 cmd_prepare 全流程，缓存产物可被 meta/characters 读取。
         let text = sample_gamestate_text();
-        let mut enc = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
         enc.write_all(text.as_bytes()).unwrap();
         let compressed = enc.finish().unwrap();
         let meta = "meta_data={\n\tsave_game_version=15\n\tversion=\"1.19.0.6\"\n}";
@@ -4047,7 +4137,10 @@ t3604={
         let lines: Vec<&str> = ndjson.lines().collect();
         assert_eq!(lines.len(), 3);
         assert!(ndjson.contains("克贞"), "人物名应可读：{ndjson}");
-        let dead_line = lines.iter().find(|l| l.contains("\"id\":\"2\"")).expect("含死者记录");
+        let dead_line = lines
+            .iter()
+            .find(|l| l.contains("\"id\":\"2\""))
+            .expect("含死者记录");
         assert!(
             dead_line.contains("\"liege\":\"7\""),
             "dead_data.liege 应被扫出：{dead_line}"
