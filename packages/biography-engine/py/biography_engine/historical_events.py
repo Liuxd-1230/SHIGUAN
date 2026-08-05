@@ -1,4 +1,4 @@
-"""历史语义事件构建（Phase 3C.3）。
+"""历史语义事件构建（Phase 3C.3 + 3C.7）。
 
 解决的问题（来自真实存档）：一次征服/继承常常在同一天获得十几个头衔
 （952.8.16 一天 13 条、955.1.22 约 30 条），旧逻辑把同日所有 title 变更
@@ -7,24 +7,19 @@
   - 主权领地 → identity_transition（成为最高统治者）；
   - 领地（王国/公国/伯爵领）→ territorial_gain / territorial_loss；
   - 个人官职 → office_appointment / office_dismissal；
-  - 政权机构 → institution_transition；
+  - 政权机构 → institution_transition（**机构归属/控制关系变化**，不表示个人任职）；
   - 宗教职务 → religious_appointment / religious_dismissal；
   - 荣誉 → honor_granted / honor_revoked；
   - 宣称 → claim_gained / claim_lost；
   - 领地被创建/消灭 → realm_created / realm_destroyed。
 
-`AcquisitionCauseResolver` 的诚实性原则（3C-Audit 修订）：
-  - 存档 history 条目**显式记录**获得 type（实测：created / destroyed / granted /
-    conquest / conquest_claim / conquest_populist / conquest_holy_war /
-    appointment_succession / appointment / migration / revoked / stepped_down /
-    abdication / faction_demand / swear_fealty / independency / leased_out /
-    returned），reader 自 CACHE_SCHEMA_VERSION=3 起把该 type 以 `raw_type`
-    原样保留进 titles.json；
-  - 只有**存档显式 type** 才确认原因（conquest*→征服、granted→册封、
-    created→创建、usurped→篡位），并标记 type_source=save_explicit；
-  - 只有 holder 变更（无 type）→ AcquisitionCause.UNKNOWN + 叙事约束
-    「不得推断因果」—— 时间相近绝不推断继承/征服/册封；
-  - 旧缓存（无 raw_type）仅 kind=created 可证「创建」，标 reader_default。
+3C.7 聚合修复（P0）：同日同类 title 变更**不再**只取组内第一个 title 的 cause。
+流程：逐条 title change → TitleHistoryActionNormalizer 逐条解析 raw_type /
+规范化动作 / cause → 再按兼容语义分组。分组键含日期、语义类型、方向与
+规范化动作（rawTypeGroup）；不同 cause 的 title 绝不合并
+（conquest + granted + None 同日 → 三条独立事件）。证据描述逐条绑定自身 raw_type。
+
+`AcquisitionCauseResolver` 是兼容旧 API 的薄封装（委托 TitleHistoryActionNormalizer）。
 """
 from __future__ import annotations
 
@@ -42,21 +37,27 @@ from models import (
     HistoricalSemanticEventType,
     TimelineEvent,
     TitleClassification,
+    TitleHistoryActionKind,
     TitlePeriod,
     TitleSemanticType,
 )
 
+from .title_history_actions import (
+    TitleHistoryAction,
+    TitleHistoryActionNormalizer,
+)
 from .title_semantics import _date_key
 
 # (semantic_type, direction) -> (EventType, 事件标题)。
+# 政权机构不写「任职」语义（3C.7）：机构归入/脱离统治体系，不代表个人任职。
 _EVENT_MAP: Dict[Tuple[HistoricalSemanticEventType, str], Tuple[EventType, str]] = {
     (HistoricalSemanticEventType.IDENTITY_TRANSITION, "gain"): (EventType.TITLE_GAIN, "身份转变"),
     (HistoricalSemanticEventType.TERRITORIAL_GAIN, "gain"): (EventType.TITLE_GAIN, "获得领地"),
     (HistoricalSemanticEventType.TERRITORIAL_LOSS, "loss"): (EventType.TITLE_LOSS, "失去领地"),
     (HistoricalSemanticEventType.OFFICE_APPOINTMENT, "gain"): (EventType.TITLE_GAIN, "就任官职"),
     (HistoricalSemanticEventType.OFFICE_DISMISSAL, "loss"): (EventType.TITLE_LOSS, "卸任官职"),
-    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "gain"): (EventType.TITLE_GAIN, "机构任职"),
-    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "loss"): (EventType.TITLE_LOSS, "离开机构"),
+    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "gain"): (EventType.TITLE_GAIN, "机构归属变化"),
+    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "loss"): (EventType.TITLE_LOSS, "机构归属变化"),
     (HistoricalSemanticEventType.RELIGIOUS_APPOINTMENT, "gain"): (EventType.TITLE_GAIN, "出任宗教职务"),
     (HistoricalSemanticEventType.RELIGIOUS_DISMISSAL, "loss"): (EventType.TITLE_LOSS, "卸任宗教职务"),
     (HistoricalSemanticEventType.CLAIM_GAINED, "gain"): (EventType.TITLE_GAIN, "获得宣称"),
@@ -65,26 +66,6 @@ _EVENT_MAP: Dict[Tuple[HistoricalSemanticEventType, str], Tuple[EventType, str]]
     (HistoricalSemanticEventType.HONOR_REVOKED, "loss"): (EventType.TITLE_LOSS, "荣誉被夺"),
     (HistoricalSemanticEventType.REALM_CREATED, "gain"): (EventType.TITLE_GAIN, "领地被创建"),
     (HistoricalSemanticEventType.REALM_DESTROYED, "loss"): (EventType.TITLE_LOSS, "领地被消灭"),
-}
-
-# (semantic_type, direction) -> 摘要动词（名词连接用）。
-_VERBS: Dict[Tuple[HistoricalSemanticEventType, str], str] = {
-    (HistoricalSemanticEventType.IDENTITY_TRANSITION, "gain"): "成为以下主权领地的最高统治者",
-    (HistoricalSemanticEventType.IDENTITY_TRANSITION, "loss"): "失去以下主权领地",
-    (HistoricalSemanticEventType.TERRITORIAL_GAIN, "gain"): "获得以下领地",
-    (HistoricalSemanticEventType.TERRITORIAL_LOSS, "loss"): "失去以下领地",
-    (HistoricalSemanticEventType.OFFICE_APPOINTMENT, "gain"): "就任以下官职",
-    (HistoricalSemanticEventType.OFFICE_DISMISSAL, "loss"): "卸任以下官职",
-    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "gain"): "进入以下机构任职",
-    (HistoricalSemanticEventType.INSTITUTION_TRANSITION, "loss"): "离开以下机构",
-    (HistoricalSemanticEventType.RELIGIOUS_APPOINTMENT, "gain"): "出任以下宗教职务",
-    (HistoricalSemanticEventType.RELIGIOUS_DISMISSAL, "loss"): "卸任以下宗教职务",
-    (HistoricalSemanticEventType.CLAIM_GAINED, "gain"): "获得以下宣称",
-    (HistoricalSemanticEventType.CLAIM_LOST, "loss"): "失去以下宣称",
-    (HistoricalSemanticEventType.HONOR_GRANTED, "gain"): "获授以下荣誉",
-    (HistoricalSemanticEventType.HONOR_REVOKED, "loss"): "以下荣誉被剥夺",
-    (HistoricalSemanticEventType.REALM_CREATED, "gain"): "以下领地被创建",
-    (HistoricalSemanticEventType.REALM_DESTROYED, "loss"): "以下领地被消灭",
 }
 
 # 需要因果解析的语义类型（领地获得 / 主权身份转变）。
@@ -100,10 +81,6 @@ _SKIP_TYPES = {
     TitleSemanticType.SPECIAL_MOD_TITLE,
     TitleSemanticType.UNKNOWN,
 }
-
-_CONSTRAINT_UNKNOWN_CAUSE = (
-    "存档未记录该头衔获得的途径，不得推断为继承、征服、册封等具体原因。"
-)
 
 # 3C-Audit：存档显式 type → AcquisitionCause 的确定性映射（仅当该 type 出现在
 # 存档 history 条目中才成立；绝不从文件名或对照项目默认值推断）。
@@ -134,7 +111,15 @@ class _Change:
 
 
 class AcquisitionCauseResolver:
-    """头衔获得原因解析（诚实性：只认存档显式 type，绝不默认推断）。"""
+    """头衔获得原因解析（兼容旧 API；委托 TitleHistoryActionNormalizer）。
+
+    3C.7 起真实解析逻辑在 TitleHistoryActionNormalizer（按 raw_type + 语义类型 +
+    方向逐条判定）；本类保留 5 元组返回签名（cause, confidence, constraints,
+    raw_type, type_source）供既有测试/调用方使用，方向按「获得」处理。
+    """
+
+    def __init__(self, normalizer: Optional[TitleHistoryActionNormalizer] = None) -> None:
+        self.normalizer = normalizer or TitleHistoryActionNormalizer()
 
     def resolve(
         self, entry: Optional[dict], date: str
@@ -143,60 +128,23 @@ class AcquisitionCauseResolver:
 
         entry 为 titles.json 中该头衔的原始条目（含 history）；缺失 → UNKNOWN。
         优先使用 history 条目里的 `raw_type`（3C-Audit 起 reader 原样保留的存档
-        显式 type，如 conquest/granted/created/usurped）；旧缓存无 raw_type 时
-        回退到粗粒度 `kind`（created/destroyed），type_source 标 reader_default。
-        只有 holder 变更（无显式 type）→ UNKNOWN，绝不因时间相近推断继承/征服。
+        显式 type，如 conquest/granted/appointment_succession）；旧缓存无 raw_type
+        时回退粗粒度 kind，type_source 标 reader_default。只有 holder 变更
+        （无显式 type）→ UNKNOWN，绝不因时间相近推断继承/征服。
         """
-        if entry is None:
-            return (
-                AcquisitionCause.UNKNOWN,
-                Confidence.UNCERTAIN,
-                [_CONSTRAINT_UNKNOWN_CAUSE],
-                None,
-                AcquisitionTypeSource.UNKNOWN,
-            )
-        for h in entry.get("history") or []:
-            if str(h.get("date")) != str(date):
-                continue
-            raw = h.get("raw_type")
-            if raw is not None:
-                cause = _RAW_TYPE_TO_CAUSE.get(str(raw))
-                if cause is not None:
-                    # 存档显式 type 直接证实获得原因（如 conquest → 征服）。
-                    return cause, Confidence.CONFIRMED, [], str(raw), AcquisitionTypeSource.SAVE_EXPLICIT
-                # 显式 type 但暂无可信映射：如实保留原始字符串，不得擅自归并。
-                return (
-                    AcquisitionCause.UNKNOWN,
-                    Confidence.INFERRED,
-                    [_CONSTRAINT_UNKNOWN_CAUSE],
-                    str(raw),
-                    AcquisitionTypeSource.SAVE_EXPLICIT,
-                )
-            kind = h.get("kind")
-            if kind == "created":
-                # 旧缓存（无 raw_type）：reader 从存档 type=created 映射而来。
-                return (
-                    AcquisitionCause.CREATION,
-                    Confidence.CONFIRMED,
-                    [],
-                    "created",
-                    AcquisitionTypeSource.READER_DEFAULT,
-                )
-            if kind == "destroyed":
-                # 该日条目是销毁记录，不能作为“获得原因”。
-                return (
-                    AcquisitionCause.UNKNOWN,
-                    Confidence.UNCERTAIN,
-                    [_CONSTRAINT_UNKNOWN_CAUSE],
-                    "destroyed",
-                    AcquisitionTypeSource.READER_DEFAULT,
-                )
+        action = self.normalizer.normalize(
+            entry=entry,
+            date=date,
+            direction="gain",
+            semantic_type=TitleSemanticType.TERRITORIAL_REALM_TITLE,
+            title_id=str((entry or {}).get("key") or ""),
+        )
         return (
-            AcquisitionCause.UNKNOWN,
-            Confidence.INFERRED,
-            [_CONSTRAINT_UNKNOWN_CAUSE],
-            None,
-            AcquisitionTypeSource.UNKNOWN,
+            action.acquisitionCause or AcquisitionCause.UNKNOWN,
+            action.confidence,
+            action.narrativeConstraints,
+            action.rawType,
+            action.typeSource,
         )
 
 
@@ -255,10 +203,12 @@ def _semantic_type_for(
 class HistoricalEventSemanticBuilder:
     """把任期聚合为「按语义类型拆分」的历史语义事件 + 时间线事件。
 
-    build() 产出两样东西（同一批变更，两种视图）：
-      - HistoricalSemanticEvent[]：结构化语义事件（供档案/前端分区展示）；
-      - TimelineEvent[]：时间线事件（同日同类合并，标题按语义类型区分），
-        取代旧版「同日全部头衔合并成一条 title_gain」的粗粒度聚合。
+    3C.7 聚合规则（P0 修复）：
+      逐条 title change → TitleHistoryActionNormalizer 逐条解析 → 按兼容语义分组。
+      分组键 = (date, semanticType, direction, normalizedAction/rawTypeGroup)。
+      不同 cause 的 title 绝不合并；同日多个 conquest（含 conquest_claim 等）因
+      normalizedAction 相同可合并；created 与 granted 绝不合并；无显式 type 的
+      unknown 组可合并但逐条保留 EvidenceRef。
     """
 
     def __init__(
@@ -268,12 +218,14 @@ class HistoricalEventSemanticBuilder:
         classifications: Dict[str, TitleClassification],
         entries: Optional[Dict[str, dict]] = None,
         cause_resolver: Optional[AcquisitionCauseResolver] = None,
+        normalizer: Optional[TitleHistoryActionNormalizer] = None,
     ) -> None:
         self.cid = str(character_id)
         self.name = character_name
         self.classifications = classifications
         self.entries = entries or {}
         self.causes = cause_resolver or AcquisitionCauseResolver()
+        self.actions = normalizer or TitleHistoryActionNormalizer()
 
     def _changes(self, periods: List[TitlePeriod]) -> List[_Change]:
         out: List[_Change] = []
@@ -284,15 +236,11 @@ class HistoricalEventSemanticBuilder:
             if p.start:
                 st = _semantic_type_for(cls, "gain")
                 if st is not None:
-                    out.append(
-                        _Change(p, cls, "gain", st, str(p.start))
-                    )
+                    out.append(_Change(p, cls, "gain", st, str(p.start)))
             if p.end:
                 st = _semantic_type_for(cls, "loss")
                 if st is not None:
-                    out.append(
-                        _Change(p, cls, "loss", st, str(p.end))
-                    )
+                    out.append(_Change(p, cls, "loss", st, str(p.end)))
         out.sort(key=lambda c: (_date_key(c.date), c.semantic_type.value, c.period.titleId))
         return out
 
@@ -300,34 +248,83 @@ class HistoricalEventSemanticBuilder:
         self, periods: List[TitlePeriod]
     ) -> Tuple[List[HistoricalSemanticEvent], List[TimelineEvent]]:
         changes = self._changes(periods)
-        groups: Dict[Tuple[str, HistoricalSemanticEventType, str], List[_Change]] = {}
+
+        # 逐条解析动作（绝不取组内第一个 title 的 cause 覆盖整组）。
+        enriched: List[Tuple[_Change, TitleHistoryAction]] = []
         for c in changes:
-            groups.setdefault((c.date, c.semantic_type, c.direction), []).append(c)
+            entry = self.entries.get(c.period.titleId)
+            action = self.actions.normalize(
+                entry=entry,
+                date=c.date,
+                direction=c.direction,
+                semantic_type=c.classification.semanticType,
+                title_id=c.period.titleId,
+            )
+            enriched.append((c, action))
+
+        # 按兼容语义分组：日期 + 语义类型 + 方向 + 规范化动作归并键。
+        groups: Dict[
+            Tuple[str, HistoricalSemanticEventType, str, str],
+            List[Tuple[_Change, TitleHistoryAction]],
+        ] = {}
+        for c, action in enriched:
+            key = (c.date, c.semantic_type, c.direction, action.rawTypeGroup)
+            groups.setdefault(key, []).append((c, action))
+
+        # 同一 (date, stype, direction) 下出现多个动作组 → 事件 id 追加动作后缀避免冲突。
+        multi: Dict[Tuple[str, str, str], int] = {}
+        for (date, stype, direction, _rg) in groups:
+            multi[(date, stype.value, direction)] = multi.get((date, stype.value, direction), 0) + 1
 
         semantic_events: List[HistoricalSemanticEvent] = []
         timeline_events: List[TimelineEvent] = []
         for key in sorted(
             groups,
-            key=lambda k: (_date_key(k[0]), k[1].value, k[2]),
+            key=lambda k: (_date_key(k[0]), k[1].value, k[2], k[3]),
         ):
-            date, stype, direction = key
+            date, stype, direction, raw_group = key
             group = groups[key]
-            title_ids = [c.period.titleId for c in group]
-            names = "、".join(c.period.name or c.period.titleId for c in group)
-            verb = _VERBS.get((stype, direction)) or ("获得" if direction == "gain" else "失去")
+            title_ids = [c.period.titleId for c, _a in group]
+            names = "、".join(c.period.name or c.period.titleId for c, _a in group)
+            action0 = group[0][1]
+            verb = action0.summaryVerb
             summary = f"{self.name} 于 {date} {verb}：{names}。"
-            title_id = f"{self.cid}-{stype.value}-{date}"
 
-            # 因果解析（仅领地获得 / 主权身份转变）。
-            cause: Optional[AcquisitionCause] = None
-            raw_type: Optional[str] = None
-            type_source: Optional[AcquisitionTypeSource] = None
-            constraints: List[str] = []
-            cause_conf = Confidence.CONFIRMED
+            base_id = f"{self.cid}-{stype.value}-{date}"
+            if multi.get((date, stype.value, direction), 1) > 1:
+                base_id = f"{base_id}-{action0.rawTypeGroup}"
+            title_id = base_id
+
+            # 事件级 cause / raw_type / type_source：组内一致才上浮；混合
+            # （如 conquest + conquest_claim 合并）则事件级留 None/保守值，
+            # 由逐条 EvidenceRef 保留各自 raw_type（绝不复制第一个 title 的 type）。
+            causes = {a.acquisitionCause for _c, a in group if a.acquisitionCause is not None}
+            cause: Optional[AcquisitionCause] = next(iter(causes)) if len(causes) == 1 else None
+            raw_types = {a.rawType for _c, a in group}
+            raw_type: Optional[str] = next(iter(raw_types)) if len(raw_types) == 1 else None
+            type_sources = {a.typeSource for _c, a in group}
+            type_source = (
+                next(iter(type_sources))
+                if len(type_sources) == 1
+                else AcquisitionTypeSource.SAVE_EXPLICIT
+            )
+            action_confs = {a.confidence for _c, a in group}
+            action_conf = next(iter(action_confs)) if len(action_confs) == 1 else Confidence.CONFIRMED
+
+            # 仅领土获得 / 主权身份转变记录 acquisitionCause：组内原因一致才上浮；
+            # 无任何显式原因 → 显式标 UNKNOWN（供 FactChecker「因果推断」规则使用），
+            # 绝不取组内第一个 title 的原因覆盖整组。
             if stype in _CAUSE_TYPES and direction == "gain":
-                entry = self.entries.get(title_ids[0])
-                cause, cause_conf, constraints, raw_type, type_source = self.causes.resolve(entry, date)
+                if len(causes) == 1:
+                    cause = next(iter(causes))
+                else:
+                    cause = AcquisitionCause.UNKNOWN
+            else:
+                cause = None
 
+            constraints = sorted({c for _ch, a in group for c in a.narrativeConstraints})
+
+            # 证据逐条绑定自身 title 的 raw_type（不把第一个 title 的 type 复制给整组）。
             evidence = [
                 EvidenceRef(
                     id=f"{self.cid}-{c.period.titleId}-{date}-ev",
@@ -336,12 +333,23 @@ class HistoricalEventSemanticBuilder:
                     rawKey=f"history.{date}.holder",
                     description="landed_titles 历史记录中的持有者变更（该日" + (
                         "起持有" if c.direction == "gain" else "止不再持有") + (
-                        f"；存档显式记录 type={raw_type}" if raw_type else ""),
+                        f"；存档显式记录 type={a.rawType}" if a.rawType else ""),
                     confidence=Confidence.CONFIRMED,
                 )
-                for c in group
+                for c, a in group
             ]
-            confidence = cause_conf if cause is not None else Confidence.CONFIRMED
+
+            # 事件置信度：领土获得/主权转变用动作置信度（未知→uncertain/inferred）；
+            # 其余事件由 holder 变更本身证实。机构归属无法确认具体控制关系时降级。
+            if stype in _CAUSE_TYPES and direction == "gain":
+                confidence = action_conf
+            else:
+                confidence = Confidence.CONFIRMED
+                if (
+                    stype == HistoricalSemanticEventType.INSTITUTION_TRANSITION
+                    and action0.normalizedAction == TitleHistoryActionKind.UNKNOWN
+                ):
+                    confidence = Confidence.UNCERTAIN
 
             semantic_events.append(
                 HistoricalSemanticEvent(
@@ -356,9 +364,10 @@ class HistoricalEventSemanticBuilder:
                     sourceEventIds=[title_id],
                     narrativeConstraints=constraints,
                     acquisitionCause=cause,
-                    # 3C-Audit：保留存档显式 type 原始字符串与证据来源，绝不丢弃。
+                    # 3C-Audit/3C.7：保留存档显式 type 原始字符串与证据来源，绝不丢弃。
                     acquisitionRawType=raw_type,
                     acquisitionTypeSource=type_source,
+                    normalizedAction=action0.normalizedAction,
                 )
             )
 
@@ -381,9 +390,9 @@ class HistoricalEventSemanticBuilder:
                             resolved=c.period.name != c.period.titleId,
                             sourcePath=c.period.sourcePath,
                         )
-                        for c in group
+                        for c, _a in group
                     ],
-                    sourcePath=f"{group[0].period.sourcePath}/history/{date}",
+                    sourcePath=f"{group[0][0].period.sourcePath}/history/{date}",
                     confidence=confidence,
                     evidence=evidence,
                 )

@@ -457,7 +457,7 @@ export type HistoricalSemanticEventType =
   | "territorial_loss"
   | "office_appointment"
   | "office_dismissal"
-  | "institution_transition"
+  | "institution_transition" // 政权机构归属/控制关系变化（归入/脱离统治体系）
   | "religious_appointment"
   | "religious_dismissal"
   | "claim_gained"
@@ -467,7 +467,7 @@ export type HistoricalSemanticEventType =
   | "realm_created"
   | "realm_destroyed";
 
-/** 领土/头衔获得原因（Phase 3C.3；除 created 可直接证实外一律 unknown，不推断因果）。 */
+/** 领土/头衔获得原因（Phase 3C.3 + 3C.7；自 reader 保留 raw_type 起，显式 type 可确认原因）。 */
 export type AcquisitionCause =
   | "inheritance"
   | "grant"
@@ -478,7 +478,28 @@ export type AcquisitionCause =
   | "marriage"
   | "faction"
   | "administrative_transfer"
+  | "appointment" // 任命取得（appointment）
   | "purchase"
+  | "unknown";
+
+/** 规范化 history 动作（Phase 3C.7 TitleHistoryActionNormalizer；rawType 原样保留）。 */
+export type TitleHistoryActionKind =
+  | "created"
+  | "destroyed"
+  | "granted"
+  | "conquered"
+  | "appointed"
+  | "administrative_succession" // 行政任命体系下继任（≠世袭继承）
+  | "migrated"
+  | "revoked"
+  | "stepped_down"
+  | "abdicated"
+  | "faction_installed"
+  | "swore_fealty"
+  | "became_independent"
+  | "leased_out"
+  | "returned"
+  | "usurpation" // 篡位（存档 type=usurped，本存档未出现）
   | "unknown";
 
 /** 获得原因的证据来源（3C-Audit，与 acquisitionRawType 配套；绝不把默认值当存档事实）。 */
@@ -501,6 +522,60 @@ export interface TitleClassification {
   signals?: string[];
   warnings?: string[];
   sourceRule?: string;
+}
+
+// ----------------------------------------------------------------------------
+// 3C.7：头衔结构与玩家历史标记（reader P1 字段的结构化契约）
+// ----------------------------------------------------------------------------
+
+/** 单条 title history 记录（rawType 为存档显式 type 原始字符串；normalizedAction/typeSource 由 normalizer 回填）。 */
+export interface TitleHistoryRecord {
+  date: string;
+  holderId?: string;
+  /** holder | created | destroyed | other */
+  kind?: string;
+  /** 存档显式 type 原始字符串（conquest/granted/appointment_succession/…；无则缺省）。 */
+  rawType?: string;
+  /** 规范化动作（conquered/administrative_succession/…；由 normalizer 回填）。 */
+  normalizedAction?: TitleHistoryActionKind;
+  /** 证据来源（save_explicit / reader_default / unknown）。 */
+  typeSource?: AcquisitionTypeSource;
+  sourcePath?: string;
+}
+
+/** 单条头衔的结构化信息（Phase 3C.7 P1 reader 字段；全部带安全默认值）。 */
+export interface TitleStructure {
+  titleId: string;
+  name: string;
+  tier?: TitleTier;
+  /** capital：title 顶层 capital= 字段（primary identity 候选/政权中心）。 */
+  capitalTitleId?: string;
+  capitalSourcePath?: string;
+  capitalResolved?: boolean;
+  /** 法理层级（de jure，与 de facto liege 分开）。 */
+  deJureLiegeId?: string;
+  deJureVassalIds?: string[];
+  /** 仅拥宣称者（claimants，与人物实际持有分开）。 */
+  claimantIds?: string[];
+  /** 政体历史：[(date, government)]。 */
+  historyGovernment?: Record<string, unknown>[];
+  currentHolderId?: string;
+  history?: TitleHistoryRecord[];
+}
+
+/** 人物侧当前直接控制领地（landed_data.domain），与 title holder 反查互相校验。 */
+export interface CharacterDomain {
+  titleIds: string[];
+  sourcePath?: string;
+  /** consistent | mismatch | unresolved */
+  holderCrossCheck?: string;
+  warnings?: string[];
+}
+
+/** 历史玩家标记（playable_data.was_player=yes；meta.player_id 之外保留全部历史玩家）。 */
+export interface PlayerHistoryMarker {
+  wasPlayer: boolean;
+  isCurrentPlayer: boolean;
 }
 
 /** 人物主要身份（Phase 3C.2 PrimaryIdentityResolver 确定性产出）。 */
@@ -537,6 +612,8 @@ export interface HistoricalSemanticEvent {
   acquisitionRawType?: string;
   /** 获得原因的证据来源（save_explicit / reader_default / unknown）。 */
   acquisitionTypeSource?: AcquisitionTypeSource;
+  /** 3C.7：TitleHistoryActionNormalizer 产出的规范化动作（与 acquisitionRawType 并存）。 */
+  normalizedAction?: TitleHistoryActionKind;
 }
 
 /** 一条可独立核验的事实（Phase 3C.5；确定性提炼，不是模型产出）。 */

@@ -23,15 +23,17 @@ from pydantic import ValidationError
 
 from models import (  # noqa: E402
     AcquisitionCause,
+    AcquisitionTypeSource,
     Biography,
     BiographyChapter,
     BiographyChapterOutline,
     BiographyOutline,
     BiographyStyle,
+    CharacterDomain,
     CharacterIdentity,
     CharacterIndexEntry,
-    CharacterRef,
     CharacterProfile,
+    CharacterRef,
     CharacterSummary,
     Confidence,
     Encoding,
@@ -50,7 +52,6 @@ from models import (  # noqa: E402
     FactCheckStatus,
     FactRef,
     FixtureEnvelope,
-    AcquisitionTypeSource,
     HistoricalSemanticEvent,
     HistoricalSemanticEventType,
     LifeEvent,
@@ -59,6 +60,7 @@ from models import (  # noqa: E402
     MockDatasetPayload,
     ParsedSave,
     ParsedSaveMeta,
+    PlayerHistoryMarker,
     PositionPeriod,
     RealmStatus,
     RelationshipPeriod,
@@ -68,10 +70,13 @@ from models import (  # noqa: E402
     SaveKind,
     Sex,
     TitleClassification,
+    TitleHistoryActionKind,
+    TitleHistoryRecord,
     TitlePeriod,
     TitleSemanticType,
-    TitleTier,
     TitleStatus,
+    TitleStructure,
+    TitleTier,
     TimelineEvent,
     TokenCompatibility,
     TokenSourceInfo,
@@ -573,7 +578,23 @@ def test_acquisition_cause_enum_values():
     values = [c.value for c in AcquisitionCause]
     assert "creation" in values
     assert "unknown" in values
-    assert len(values) == 11
+    assert len(values) == 12
+
+
+def test_title_history_action_kind_enum_values():
+    """3C.7：规范化 history 动作枚举（与 TS 严格镜像；非法值运行时拒绝）。"""
+    values = [k.value for k in TitleHistoryActionKind]
+    assert len(values) == 17
+    for expected in (
+        "created", "destroyed", "granted", "conquered", "appointed",
+        "administrative_succession", "migrated", "revoked", "stepped_down",
+        "abdicated", "faction_installed", "swore_fealty", "became_independent",
+        "leased_out", "returned", "usurpation", "unknown",
+    ):
+        assert expected in values
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        TitleHistoryActionKind("invented_action")
 
 
 def test_title_classification_roundtrip():
@@ -669,6 +690,97 @@ def test_historical_semantic_event_raw_type_roundtrip():
     assert ev2.acquisitionRawType == "conquest"
     assert ev2.acquisitionTypeSource == AcquisitionTypeSource.SAVE_EXPLICIT
     assert ev2.acquisitionCause == AcquisitionCause.CONQUEST
+
+
+def test_historical_semantic_event_normalized_action_roundtrip():
+    """3C.7：normalizedAction（TitleHistoryActionKind）在语义事件中往返。"""
+    ev = HistoricalSemanticEvent(
+        eventId="p1-territorial_gain-953.11.18-conquered",
+        semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+        date="953.11.18",
+        summary="梁某 于 953.11.18 通过征服获得：梅奥。",
+        relatedTitleIds=["c_mayo"],
+        confidence=Confidence.CONFIRMED,
+        acquisitionCause=AcquisitionCause.CONQUEST,
+        acquisitionRawType="conquest",
+        acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+        normalizedAction=TitleHistoryActionKind.CONQUERED,
+    )
+    dumped = ev.model_dump(mode="json")
+    ev2 = HistoricalSemanticEvent.model_validate(dumped)
+    assert ev2.normalizedAction == TitleHistoryActionKind.CONQUERED
+    # 缺省兼容：旧 fixture 无该字段时不得崩溃。
+    dump3 = {k: v for k, v in dumped.items() if k != "normalizedAction"}
+    ev3 = HistoricalSemanticEvent.model_validate(dump3)
+    assert ev3.normalizedAction is None
+
+
+def test_title_structure_roundtrip_with_defaults():
+    """3C.7：TitleStructure 新字段（capital/de_jure/claims/history_government）往返。
+
+    缺字段的旧 fixture（最小字段集）也可构造（安全默认值）。
+    """
+    ts = TitleStructure(
+        titleId="k_example",
+        name="例王国",
+        tier=TitleTier.KINGDOM,
+        capitalTitleId="c_example",
+        capitalSourcePath="landed_titles/k_example/capital",
+        capitalResolved=True,
+        deJureLiegeId="e_example",
+        deJureVassalIds=["d_a", "d_b"],
+        claimantIds=["90001", "90002"],
+        historyGovernment=[{"date": "950.1.1", "government": "feudal"}],
+        currentHolderId="12345",
+        history=[
+            TitleHistoryRecord(
+                date="953.11.18",
+                holderId="25990",
+                kind="other",
+                rawType="conquest",
+                normalizedAction=TitleHistoryActionKind.CONQUERED,
+                typeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+            )
+        ],
+    )
+    dumped = ts.model_dump(mode="json")
+    ts2 = TitleStructure.model_validate(dumped)
+    assert ts2.capitalTitleId == "c_example"
+    assert ts2.deJureLiegeId == "e_example"
+    assert ts2.deJureVassalIds == ["d_a", "d_b"]
+    assert ts2.claimantIds == ["90001", "90002"]
+    assert ts2.history[0].normalizedAction == TitleHistoryActionKind.CONQUERED
+    # 缺字段兼容。
+    minimal = TitleStructure.model_validate({"titleId": "c_mayo", "name": "梅奥"})
+    assert minimal.capitalTitleId is None
+    assert minimal.deJureVassalIds == []
+    assert minimal.claimantIds == []
+    assert minimal.historyGovernment == []
+    assert minimal.history == []
+
+
+def test_character_domain_and_player_marker_roundtrip():
+    """3C.7：CharacterDomain / PlayerHistoryMarker 默认值与往返。"""
+    dom = CharacterDomain(
+        titleIds=["c_nandian", "d_sipsongpanna"],
+        sourcePath="character/20423/landed_data/domain",
+        holderCrossCheck="consistent",
+    )
+    dumped = dom.model_dump(mode="json")
+    dom2 = CharacterDomain.model_validate(dumped)
+    assert dom2.titleIds == ["c_nandian", "d_sipsongpanna"]
+    assert dom2.holderCrossCheck == "consistent"
+    empty = CharacterDomain.model_validate({})
+    assert empty.titleIds == []
+    assert empty.holderCrossCheck is None
+
+    marker = PlayerHistoryMarker(wasPlayer=True, isCurrentPlayer=True)
+    m2 = PlayerHistoryMarker.model_validate(marker.model_dump(mode="json"))
+    assert m2.wasPlayer is True
+    assert m2.isCurrentPlayer is True
+    m3 = PlayerHistoryMarker.model_validate({})
+    assert m3.wasPlayer is False
+    assert m3.isCurrentPlayer is False
 
 
 def test_fact_ref_roundtrip():

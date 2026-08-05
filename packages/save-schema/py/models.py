@@ -232,7 +232,7 @@ class HistoricalSemanticEventType(str, Enum):
     TERRITORIAL_LOSS = "territorial_loss"            # 失去领地
     OFFICE_APPOINTMENT = "office_appointment"        # 就任个人官职
     OFFICE_DISMISSAL = "office_dismissal"            # 卸任个人官职
-    INSTITUTION_TRANSITION = "institution_transition"  # 政权机构任职变化（就任/离任）
+    INSTITUTION_TRANSITION = "institution_transition"  # 政权机构归属/控制关系变化（归入/脱离统治体系）
     RELIGIOUS_APPOINTMENT = "religious_appointment"  # 出任宗教职务
     RELIGIOUS_DISMISSAL = "religious_dismissal"      # 卸任宗教职务
     CLAIM_GAINED = "claim_gained"                    # 获得宣称
@@ -244,11 +244,12 @@ class HistoricalSemanticEventType(str, Enum):
 
 
 class AcquisitionCause(str, Enum):
-    """领土/头衔获得原因（Phase 3C.3）。
+    """领土/头衔获得原因（Phase 3C.3 + 3C.7）。
 
-    存档 titles.json 只记录 holder 变更（kind=created/holder/other），**没有**
-    战争→头衔、继承→头衔的关联字段。除 kind=created 可直接证实的「创建」外，
-    一律 unknown，绝不因时间相近而推断继承/征服/册封等因果。
+    存档 titles.json 记录 holder 变更（kind=created/holder/other）与显式 type
+    （conquest/granted/…）。自 CACHE_SCHEMA_VERSION=3 起 reader 把显式 type 以
+    `raw_type` 原样保留，`TitleHistoryActionNormalizer` 据此确认原因；仍没有显式
+    type 的变更一律 unknown，绝不因时间相近而推断继承/征服/册封等因果。
     """
     INHERITANCE = "inheritance"                  # 继承（暂无字段直接证实，仅保留枚举位）
     GRANT = "grant"                              # 册封/赐予
@@ -258,9 +259,35 @@ class AcquisitionCause(str, Enum):
     ELECTION = "election"                        # 选举
     MARRIAGE = "marriage"                        # 联姻取得
     FACTION = "faction"                          # 派系拥立
-    ADMINISTRATIVE_TRANSFER = "administrative_transfer"  # 行政转移
+    ADMINISTRATIVE_TRANSFER = "administrative_transfer"  # 行政转移（appointment_succession）
+    APPOINTMENT = "appointment"                  # 任命取得（appointment）
     PURCHASE = "purchase"                        # 购买
     UNKNOWN = "unknown"                          # 存档未记录，诚实留空
+
+
+class TitleHistoryActionKind(str, Enum):
+    """CK3 title history 动作的规范化语义（Phase 3C.7 TitleHistoryActionNormalizer）。
+
+    由存档显式 `type`（raw_type）→ 规范化动作；**raw_type 原样保留**，本枚举只提供
+    统一语义供分组/文案/校验使用。unknown = 存档未记录 type 或暂无可信映射。
+    """
+    CREATED = "created"                          # 领地被创建
+    DESTROYED = "destroyed"                      # 领地被消灭
+    GRANTED = "granted"                          # 经授予获得
+    CONQUERED = "conquered"                      # 经征服取得（含 conquest_claim/populist/holy_war）
+    APPOINTED = "appointed"                      # 经任命（官职/统治权/机构归属，依语义类型）
+    ADMINISTRATIVE_SUCCESSION = "administrative_succession"  # 行政任命体系下继任（≠世袭继承）
+    MIGRATED = "migrated"                        # 因迁徙机制发生控制变化
+    REVOKED = "revoked"                          # 被撤销/被免除/被收回
+    STEPPED_DOWN = "stepped_down"                # 结束任期（主动卸任需另有证据）
+    ABDICATED = "abdicated"                      # 退位（仅统治身份）
+    FACTION_INSTALLED = "faction_installed"      # 因派系要求
+    SWORE_FEALTY = "swore_fealty"                # 宣誓效忠
+    BECAME_INDEPENDENT = "became_independent"    # 取得独立地位
+    LEASED_OUT = "leased_out"                    # 租借或委托管理
+    RETURNED = "returned"                        # 归还/恢复原属
+    USURPATION = "usurpation"                    # 篡位（存档 type=usurped，本存档未出现）
+    UNKNOWN = "unknown"                          # 未记录/未确认，诚实留空
 
 
 class AcquisitionTypeSource(str, Enum):
@@ -453,6 +480,78 @@ class TitleClassification(BaseModel):
     sourceRule: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# 3C.7：头衔结构与玩家历史标记（reader P1 字段的结构化契约）
+# ---------------------------------------------------------------------------
+
+class TitleHistoryRecord(BaseModel):
+    """单条 title history 记录（Phase 3C.7）。
+
+    与 reader titles.json 的 history 条目一一对应：rawType 是存档显式 type 的
+    原始字符串，normalizedAction/typeSource 由 TitleHistoryActionNormalizer 补充
+    （Python 侧回填；reader 只抄原始字段）。
+    """
+    date: str
+    holderId: Optional[str] = None
+    # holder | created | destroyed | other
+    kind: str = "holder"
+    # 存档显式 type 原始字符串（conquest/granted/appointment_succession/…；无则 None）。
+    rawType: Optional[str] = None
+    # 规范化动作（conquered/administrative_succession/…；由 normalizer 回填）。
+    normalizedAction: Optional[TitleHistoryActionKind] = None
+    # 证据来源（save_explicit / reader_default / unknown）。
+    typeSource: Optional[AcquisitionTypeSource] = None
+    # 该记录在 landed_titles 中的来源路径（如 landed_titles/{titleId}/history/{date}）。
+    sourcePath: Optional[str] = None
+
+
+class TitleStructure(BaseModel):
+    """单条头衔的结构化信息（Phase 3C.7 P1 reader 字段的契约形态）。
+
+    全部新增字段带安全默认值，旧 fixture/旧缓存（缺字段）仍可构造。
+    """
+    titleId: str
+    name: str
+    tier: Optional[TitleTier] = None
+    # capital：title 顶层 capital= 字段（primary identity 候选/政权中心）。
+    capitalTitleId: Optional[str] = None
+    capitalSourcePath: Optional[str] = None
+    capitalResolved: bool = False
+    # 法理层级（de jure，与 de facto liege 分开）。
+    deJureLiegeId: Optional[str] = None
+    deJureVassalIds: List[str] = Field(default_factory=list)
+    # 仅拥宣称者（claimants，与人物实际持有分开）。
+    claimantIds: List[str] = Field(default_factory=list)
+    # 政体历史（保留但不生成复杂传记文案）：[(date, government)]。
+    historyGovernment: List[dict] = Field(default_factory=list)
+    currentHolderId: Optional[str] = None
+    history: List[TitleHistoryRecord] = Field(default_factory=list)
+
+
+class CharacterDomain(BaseModel):
+    """人物侧当前直接控制领地（landed_data.domain）。
+
+    与 title 顶层 holder 反查互相校验：不一致时产生 warning 并降低 confidence，
+    不得静默选择其中一边（Phase 3C.7 P1）。
+    """
+    titleIds: List[str] = Field(default_factory=list)
+    sourcePath: Optional[str] = None
+    # 与 title holder 反查结果：consistent（全部一致）/ mismatch（存在不一致）/
+    # unresolved（无法反查，如 title 索引不可用）。
+    holderCrossCheck: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+
+
+class PlayerHistoryMarker(BaseModel):
+    """历史玩家标记（Phase 3C.7 P1，playable_data.was_player=yes）。
+
+    除 meta.player_id（当前玩家）外，保留全部曾被玩家控制的人物历史标记；
+    isCurrentPlayer 由 meta.player_id 匹配决定。
+    """
+    wasPlayer: bool = False
+    isCurrentPlayer: bool = False
+
+
 class CharacterIdentity(BaseModel):
     """人物主要身份（Phase 3C.2 PrimaryIdentityResolver 确定性产出）。
 
@@ -498,6 +597,10 @@ class HistoricalSemanticEvent(BaseModel):
     acquisitionRawType: Optional[str] = None
     # 获得原因的证据来源（save_explicit / reader_default / unknown）。
     acquisitionTypeSource: Optional[AcquisitionTypeSource] = None
+    # 3C.7：TitleHistoryActionNormalizer 产出的规范化动作（如 conquered /
+    # administrative_succession / unknown）。与 acquisitionRawType 并存：
+    # rawType 是存档原始字符串，normalizedAction 是统一语义（分组/文案/校验用）。
+    normalizedAction: Optional[TitleHistoryActionKind] = None
 
 
 class FactRef(BaseModel):

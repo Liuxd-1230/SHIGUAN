@@ -92,7 +92,7 @@ def test_same_day_multi_semantic_types_split():
     }
     # 时间线同样拆分为 3 条。
     assert len(timeline) == 3
-    assert {t.title for t in timeline} == {"身份转变", "机构任职", "领地被创建"}
+    assert {t.title for t in timeline} == {"身份转变", "机构归属变化", "领地被创建"}
 
 
 def test_territorial_loss_has_cause_unknown_constraint():
@@ -173,7 +173,12 @@ def test_office_appointment_event_mapping():
     assert len(sem_events) == 2
     assert timeline[0].type == EventType.TITLE_GAIN
     assert timeline[1].type == EventType.TITLE_LOSS
-    assert "就任" in timeline[0].title or timeline[0].title == "机构任职"
+    # 3C.7：政权机构不写「就任/任职」语义。
+    assert timeline[0].title == "机构归属变化"
+    assert "就任" not in timeline[0].title and "任职" not in timeline[0].title
+    # 机构事件固定携带「不代表个人任职」叙事约束。
+    for ev in sem_events:
+        assert any("不代表人物本人在该机构任职" in c for c in ev.narrativeConstraints)
 
 
 def test_acquisition_cause_resolver_missing_entry():
@@ -236,8 +241,8 @@ def test_acquisition_cause_resolver_save_explicit_granted_and_usurped():
         assert src.value == "save_explicit"
 
 
-def test_acquisition_cause_resolver_save_explicit_unmapped_keeps_raw():
-    """3C-Audit：显式 type 但暂无映射（appointment_succession）→ 保留 raw，不擅自归并。"""
+def test_acquisition_cause_resolver_save_explicit_appointment_succession():
+    """3C.7：appointment_succession → 行政任命体系下继任（≠世袭继承，保留 raw）。"""
     r = AcquisitionCauseResolver()
     entry = _entry(
         "k_viet",
@@ -251,8 +256,30 @@ def test_acquisition_cause_resolver_save_explicit_unmapped_keeps_raw():
         ],
     )
     cause, conf, constraints, raw, src = r.resolve(entry, "955.1.22")
-    assert cause == AcquisitionCause.UNKNOWN
+    assert cause == AcquisitionCause.ADMINISTRATIVE_TRANSFER
+    assert conf == Confidence.CONFIRMED
+    assert not constraints
     assert raw == "appointment_succession"
+    assert src.value == "save_explicit"
+
+
+def test_acquisition_cause_resolver_save_explicit_unmapped_keeps_raw():
+    """3C-Audit：显式 type 但无映射（如 invented_action）→ 保留 raw，不擅自归并。"""
+    r = AcquisitionCauseResolver()
+    entry = _entry(
+        "k_viet",
+        history=[
+            {
+                "date": "955.1.22",
+                "holder_id": "20423",
+                "kind": "other",
+                "raw_type": "invented_action",
+            }
+        ],
+    )
+    cause, conf, constraints, raw, src = r.resolve(entry, "955.1.22")
+    assert cause == AcquisitionCause.UNKNOWN
+    assert raw == "invented_action"
     assert src.value == "save_explicit"
     assert any("不得推断" in c for c in constraints)
 
@@ -291,3 +318,136 @@ def test_builder_passes_raw_type_into_semantic_event():
     assert gain[0].acquisitionTypeSource.value == "save_explicit"
     # 证据描述如实提及存档显式 type。
     assert any("type=conquest" in ev.description for ev in gain[0].evidence)
+
+
+# ---------------------------------------------------------------------------
+# 3C.7 P0：同日聚合必须按显式动作拆分，绝不取组内第一个 title 的原因
+# ---------------------------------------------------------------------------
+
+def _mixed_entries(*raws):
+    """构造同日多条 county 变更（raw 为每条 history 的 raw_type/None）。"""
+    return [
+        _entry(
+            f"c_{i}",
+            tier="county",
+            liege="k_x",
+            name=f"县{i}",
+            name_source="save",
+            history=[
+                {
+                    "date": "953.11.18",
+                    "holder_id": "p1",
+                    "kind": "other" if raw else "holder",
+                    **({"raw_type": raw} if raw else {}),
+                }
+            ],
+        )
+        for i, raw in enumerate(raws)
+    ]
+
+
+def test_same_day_mixed_causes_split_not_first_title():
+    """同日 conquest / granted / None 三 title → 拆分为三条（不同 cause 绝不合并）。"""
+    entries = _mixed_entries("conquest", "granted", None)
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(3)]
+    sem_events, timeline = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 3, [e.summary for e in gains]
+    causes = {e.acquisitionCause for e in gains}
+    assert causes == {AcquisitionCause.CONQUEST, AcquisitionCause.GRANT, AcquisitionCause.UNKNOWN}
+    # 事件 id 不冲突（同日同语义多组必须区分）。
+    assert len({e.eventId for e in gains}) == 3
+    assert len(timeline) == 3
+    # 证据逐条绑定自身 raw_type（不把第一个 title 的 type 复制给整组）。
+    by_cause = {e.acquisitionCause: e for e in gains}
+    assert "type=conquest" in by_cause[AcquisitionCause.CONQUEST].evidence[0].description
+    assert "type=granted" in by_cause[AcquisitionCause.GRANT].evidence[0].description
+    unknown = by_cause[AcquisitionCause.UNKNOWN]
+    assert "type=" not in unknown.evidence[0].description
+    assert any("不得推断" in c for c in unknown.narrativeConstraints)
+
+
+def test_same_day_multiple_conquest_merge():
+    """同日多个 conquest 可以合并（同 normalizedAction + 同 cause）。"""
+    entries = _mixed_entries("conquest", "conquest")
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(2)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 1
+    assert gains[0].acquisitionCause == AcquisitionCause.CONQUEST
+    assert sorted(gains[0].relatedTitleIds) == ["c_0", "c_1"]
+    assert gains[0].acquisitionRawType == "conquest"
+    assert len(gains[0].evidence) == 2
+    assert all("type=conquest" in ev.description for ev in gains[0].evidence)
+
+
+def test_same_day_conquest_and_conquest_claim_merge_by_normalized_action():
+    """同日 conquest 与 conquest_claim 是否合并由 normalizedAction 规则决定（同为 conquered）。"""
+    entries = _mixed_entries("conquest", "conquest_claim")
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(2)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 1
+    assert gains[0].acquisitionCause == AcquisitionCause.CONQUEST
+    assert gains[0].normalizedAction.value == "conquered"
+    # 组内 raw_type 混合 → 事件级不复制第一个 title 的 type；证据逐条保留。
+    assert gains[0].acquisitionRawType is None
+    descs = [ev.description for ev in gains[0].evidence]
+    assert any("type=conquest" in d for d in descs)
+    assert any("type=conquest_claim" in d for d in descs)
+
+
+def test_same_day_created_and_granted_never_merge():
+    """同日 created 与 granted 绝不合并（不同 normalizedAction + 不同 cause）。"""
+    entries = _mixed_entries("created", "granted")
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(2)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 2
+    causes = {e.acquisitionCause for e in gains}
+    assert causes == {AcquisitionCause.CREATION, AcquisitionCause.GRANT}
+
+
+def test_same_day_two_unknown_merge_keep_individual_evidence():
+    """同日两个 unknown（无显式 type）可以合并，但保留各自 EvidenceRef。"""
+    entries = _mixed_entries(None, None)
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(2)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 1
+    assert gains[0].acquisitionCause == AcquisitionCause.UNKNOWN
+    assert any("不得推断" in c for c in gains[0].narrativeConstraints)
+    assert len(gains[0].evidence) == 2
+    assert {ev.id for ev in gains[0].evidence} == {
+        "p1-c_0-953.11.18-ev",
+        "p1-c_1-953.11.18-ev",
+    }
+
+
+def test_same_day_mixed_cause_never_overridden_by_first_title():
+    """组内任一 title 原因不同，不能被第一个 title 覆盖（顺序无关）。"""
+    # 第一个是 conquest，第二、三是 granted/None —— 必须仍拆分为三组。
+    entries = _mixed_entries("conquest", "granted", None)
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(3)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 3
+    by_id = {e.eventId: e for e in gains}
+    for e in gains:
+        if e.acquisitionCause == AcquisitionCause.CONQUEST:
+            assert sorted(e.relatedTitleIds) == ["c_0"]
+        elif e.acquisitionCause == AcquisitionCause.GRANT:
+            assert sorted(e.relatedTitleIds) == ["c_1"]
+        else:
+            assert sorted(e.relatedTitleIds) == ["c_2"]
+
+
+def test_same_day_unknown_never_merged_with_explicit_cause():
+    """同日 unknown 与 conquest 绝不合并（一个原因已知、一个未载）。"""
+    entries = _mixed_entries("conquest", None)
+    periods = [_period(f"c_{i}", f"县{i}", start="953.11.18", current=True) for i in range(2)]
+    sem_events, _ = _builder(entries).build(periods)
+    gains = [e for e in sem_events if e.semanticType.value == "territorial_gain"]
+    assert len(gains) == 2
+    causes = {e.acquisitionCause for e in gains}
+    assert causes == {AcquisitionCause.CONQUEST, AcquisitionCause.UNKNOWN}
