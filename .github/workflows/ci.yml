@@ -41,7 +41,8 @@ jobs:
         with:
           python-version: "3.11"
       - name: 安装依赖
-        run: python -m pip install --upgrade pip && pip install "fastapi" "uvicorn" "pydantic>=2" "httpx" "pytest" "python-multipart"
+        # biography-engine（title_semantics.py）import yaml —— 后端与 biography-engine 测试都需要。
+        run: python -m pip install --upgrade pip && pip install "fastapi" "uvicorn" "pydantic>=2" "httpx" "pytest" "python-multipart" "pyyaml"
       - name: 运行后端测试
         working-directory: apps/server
         run: python -m pytest -q
