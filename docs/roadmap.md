@@ -331,6 +331,36 @@
 
 ---
 
+## Phase 3C —— 全局历史语义层与可信叙事收口（✅ 已完成，见 docs/phase3c-acceptance.md）
+
+- ✅ 3C.2 头衔语义层：`TitleSemanticClassifier`（12 类语义）+ `TitleSemanticRuleRegistry`
+  （分层 `config/title-semantics/`：user overrides > mods/ > generic > base > 启发式；
+  Mod 规则按 `mods` 标识子串或 `title_signatures` 前缀匹配，两空永不激活）+ `TitleDisplayResolver`
+  （**禁止 tier→爵位硬编码**：展示名 = 存档直书 → 本地化 → 原 key 回退）+ `PrimaryIdentityResolver`
+  （headline 用「{title}的最高统治者 / 的领主 / 任职」公式 + `RealmStatus` 十态，无现任头衔不写平民）。
+- ✅ 3C.3 历史语义事件：`HistoricalEventSemanticBuilder` 按 `(date, semanticType, direction)`
+  分组（同日大量头衔变更按语义类型拆分，不再一条刷屏）；`AcquisitionCauseResolver`
+  （除 history kind=created → creation 外一律 unknown 并带「不得推断因果」叙事约束）。
+- ✅ 3C.4 CompressedProfile v3（`COMPRESSION_VERSION="3"`，v1/v2 自动 stale）：身份/领地/官职/
+  机构/宗教/荣誉/宣称/家族/关系/战争/历史语义事件/facts/叙事约束；`NarrativeSummaryBuilder`
+  确定性史料摘要（一句话生平 + 分节 + 历史语义事件文本）；Prompt 输入统一（outline v3 / chapter v2）。
+- ✅ 3C.5 FactRef/factIds/claims：`BiographyChapter.factIds` + `Biography.facts`（确定性回填）；
+  FactChecker 新增 21–24 规则（fact_ref_invalid / cause_inference / peerage_mismatch /
+  event_fact_grounding）；前端 BiographyPage 分区展示（主要身份 → 一句话生平 → 史料摘要 →
+  AI 提纲正文 → 时间线 → 统治身份 → 统治历程 → 领土 → 个人官职 → 政权机构 → 宗教/荣誉/宣称 →
+  家庭关系 → 证据诊断）。
+- ✅ 3C.1 人工验收基准：16 类角色样本（`tests/phase3c_fixtures.py` + `test_phase3c_acceptance.py` 17 项）
+  + 真实存档双样本抽查（`scripts/phase3c_acceptance.py`，实测 19160/19003 条 titles、
+  4376/2915 条语义事件全部带约束）。真实样本 `e_minister_*` 机构 9 条不被 `e_` 规则吞掉，
+  `k_papal_state` 教宗国正确判宗教职务。
+- ✅ 后端接线：profile 端点返回 `identity` / `historicalEvents` / `majorTerritories` /
+  `subordinateTerritories` / `personalOffices` / `realmInstitutions` / `religiousOffices` /
+  `honors` / `claims`；时间线事件与历史语义事件同源产出。
+- 限制：`RealmStatus` 单枚举无法表达「独立小领主」复合状态；宗教职务仅稳定前缀键
+  （k_papal_state 等）被识别，无稳定前缀者诚实保持为领地。
+
+---
+
 ## Phase 4 —— 增强沉浸感
 
 1. 家族树、世代切换、家族兴衰时间线。
