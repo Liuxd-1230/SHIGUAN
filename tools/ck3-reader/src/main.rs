@@ -53,7 +53,7 @@ use serde::Serialize;
 const ROOT: &[&str] = &["meta_data", "t3155"];
 // 缓存 schema 版本：Python 侧 _cache_valid 要求 meta.json 的 cache_schema_version
 // 与之一致。扫描/提取逻辑或 melt 行为变更时递增，强制旧缓存失效重建（防交叉复用）。
-const CACHE_SCHEMA_VERSION: &str = "3";
+const CACHE_SCHEMA_VERSION: &str = "4";
 const K_SAVE_VERSION: &[&str] = &["save_game_version", "t058f"];
 const K_GAME_VERSION: &[&str] = &["version", "t00ee"];
 const K_DATE: &[&str] = &["meta_date", "t3157"];
@@ -114,6 +114,26 @@ const K_LIEGE: &[&str] = &["liege", "t292d"];
 
 // —— 统治判定 ——
 const K_LANDED_DATA: &[&str] = &["landed_data", "t2753"];
+
+// —— 3C.7 P1：玩家历史标记（playable_data.was_player=yes）——
+// 存档根部 `played_character={ name=… character=<当前玩家id> player=1 … }` 给出当前玩家
+// 人物 id；isCurrentPlayer 由 Python 侧按 meta.player_id 匹配决定。
+const K_PLAYED_CHARACTER: &[&str] = &["played_character", "t27eb"];
+const K_PLAYED_CHARACTER_ID: &[&str] = &["character", "t06ec"];
+const K_PLAYABLE_DATA: &[&str] = &["playable_data", "t2754"];
+const K_WAS_PLAYER: &[&str] = &["was_player", "t32b0"];
+
+// —— 3C.7 P1：人物直控领地（landed_data.domain={ … } 内的数字 title id 列表）——
+const K_DOMAIN: &[&str] = &["domain", "t27e6"];
+
+// —— 3C.7 P1：头衔结构字段（title 块顶层；与 history 内的 holder= 不同，均不出现于
+// history Format B 条目内，整块搜索安全；capital 实测出现在 history 之后）——
+const K_CAPITAL: &[&str] = &["capital", "t27fd"];
+const K_DE_JURE_LIEGE: &[&str] = &["de_jure_liege", "t27db"];
+const K_DE_JURE_VASSALS: &[&str] = &["de_jure_vassals", "t27dc"];
+const K_CLAIM: &[&str] = &["claim", "t2d7b"];
+/// 政体历史：真实存档中为单值标量（如 theocracy_government）；兼容 date=value 块形态。
+const K_HISTORY_GOVERNMENT: &[&str] = &["history_government", "t31da"];
 
 // ----------------------------------------------------------------------------
 // Phase 2B M2：实体容器 token（真实名 + 占位 id 双候选）
@@ -189,6 +209,17 @@ const FIELD_MAPPINGS: &[(&str, &str)] = &[
     ("dead_data.reason", "t2b64"),
     ("dead_data.killer", "t2766"),
     ("landed_data", "t2753"),
+    // —— 3C.7 P1：玩家历史标记 + 头衔结构 ——
+    ("played_character", "t27eb"),
+    ("played_character.character", "t06ec"),
+    ("playable_data", "t2754"),
+    ("playable_data.was_player", "t32b0"),
+    ("landed_data.domain", "t27e6"),
+    ("title.capital", "t27fd"),
+    ("title.de_jure_liege", "t27db"),
+    ("title.de_jure_vassals", "t27dc"),
+    ("title.claim", "t2d7b"),
+    ("title.history_government", "t31da"),
 ];
 
 #[allow(dead_code)]
@@ -238,6 +269,8 @@ struct InspectOutput {
     game_version: Option<String>,
     date: Option<String>,
     player_name: Option<String>,
+    /// 当前玩家人物 id（存档根部 played_character.character；3C.7 P1）。
+    player_id: Option<String>,
     mod_count: usize,
     mods: Vec<String>,
     character_count: usize,
@@ -324,6 +357,13 @@ struct CharacterRecord {
     // —— Phase 2C.1 新增：君主（仅 dead_data 子块实测存在，卒年记录其君主）——
     #[serde(default)]
     liege: Option<String>,
+    // —— Phase 3C.7 P1 新增：玩家历史标记 + 直控领地 ——
+    /// playable_data.was_player=yes（存档根部 played_character 之外的历史玩家标记）。
+    #[serde(default)]
+    was_player: bool,
+    /// landed_data.domain={ … } 内的直控领地 title id 列表（与 title 顶层 holder 反查互验）。
+    #[serde(default)]
+    domain_titles: Vec<String>,
 }
 
 impl CharacterRecord {
@@ -367,6 +407,8 @@ impl CharacterRecord {
             former_concubinists: Vec::new(),
             former_concubines: Vec::new(),
             liege: None,
+            was_player: false,
+            domain_titles: Vec::new(),
         }
     }
 }
@@ -803,6 +845,10 @@ fn scan_meta(text: &str) -> MetaTuple {
 enum SubBlock {
     Family,
     Dead,
+    /// landed_data 子块（统治数据；含直控领地 domain）。
+    Landed,
+    /// playable_data 子块（含历史玩家标记 was_player）。
+    Playable,
 }
 
 /// 当前正在收集的列表容器。
@@ -815,6 +861,8 @@ enum ListKind {
     FormerConcubinist,
     FormerConcubine,
     Concubine,
+    /// landed_data.domain 内的直控领地 title id 列表。
+    Domain,
 }
 
 /// 完整扫描人物容器：统计总数/死亡数，并提取每个角色的完整记录。
@@ -909,6 +957,14 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                     } else if line_opens_key(t, K_DEAD_DATA) {
                         sub = Some(SubBlock::Dead);
                         sub_depth = depth;
+                    } else if line_opens_key(t, K_LANDED_DATA) {
+                        // 3C.7 P1：进入统治数据子块，收集 domain={ … } 直控领地。
+                        sub = Some(SubBlock::Landed);
+                        sub_depth = depth;
+                    } else if line_opens_key(t, K_PLAYABLE_DATA) {
+                        // 3C.7 P1：进入玩家数据子块，读取历史玩家标记 was_player。
+                        sub = Some(SubBlock::Playable);
+                        sub_depth = depth;
                     } else if line_opens_key(t, K_TRAITS) {
                         list = Some(ListKind::Traits);
                         list_depth = depth;
@@ -983,6 +1039,21 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                     if c.liege.is_none() {
                         c.liege = extract_kv(t, K_LIEGE);
                     }
+                } else if sub == Some(SubBlock::Landed) && depth == sub_depth + 1 {
+                    // —— landed_data 内：直控领地 domain={ … } ——
+                    if line_opens_key(t, K_DOMAIN) {
+                        list = Some(ListKind::Domain);
+                        list_depth = depth;
+                        if let Some(ids) = same_line_brace_ids(line) {
+                            c.domain_titles.extend(ids);
+                            list = None;
+                        }
+                    }
+                } else if sub == Some(SubBlock::Playable) && depth == sub_depth + 1 {
+                    // —— playable_data 内：历史玩家标记 ——
+                    if line_is_yes(t, K_WAS_PLAYER) {
+                        c.was_player = true;
+                    }
                 }
 
                 // —— 列表体：收集裸 id ——
@@ -998,6 +1069,7 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
                             ListKind::FormerConcubinist => c.former_concubinists.push(tok),
                             ListKind::FormerConcubine => c.former_concubines.push(tok),
                             ListKind::Concubine => c.concubines.push(tok),
+                            ListKind::Domain => c.domain_titles.push(tok),
                         }
                     }
                 }
@@ -1033,6 +1105,15 @@ fn scan_characters_full(text: &str) -> (usize, usize, Vec<CharacterRecord>) {
     build_parent_index(&mut records);
     let dead = records.iter().filter(|r| !r.alive).count();
     (count, dead, records)
+}
+
+/// 定位存档根部的 played_character 容器，返回当前玩家人物 id（3C.7 P1）。
+///
+/// 结构（实测）：`played_character={ name="kdhb" character=20423 player=1 legacy={ … } }`。
+/// `character=` 为顶层字段；legacy 子块内也有 character=，因此只取块内**第一个**命中。
+fn scan_played_character_id(text: &str) -> Option<String> {
+    let (block, _) = find_container_block(text, K_PLAYED_CHARACTER)?;
+    grab_num_any(block, K_PLAYED_CHARACTER_ID)
 }
 
 /// 收集行中的裸 id token（数字或 tXXXX），用于 spouse=/child= 列表。
@@ -1076,6 +1157,7 @@ fn push_list_ids(c: &mut CharacterRecord, kind: ListKind, ids: &[String]) {
         ListKind::FormerConcubinist => c.former_concubinists.extend(ids.iter().cloned()),
         ListKind::FormerConcubine => c.former_concubines.extend(ids.iter().cloned()),
         ListKind::Concubine => c.concubines.extend(ids.iter().cloned()),
+        ListKind::Domain => c.domain_titles.extend(ids.iter().cloned()),
     }
 }
 
@@ -1309,6 +1391,10 @@ struct TitleHistoryEntry {
 
 #[derive(Serialize)]
 struct TitleEntry {
+    /// landed_titles 容器内的**数字** title id（如 `15120={ key=e_liangyi … }` 的 15120）。
+    /// 存档内 capital/de_jure_liege/de_jure_vassals/domain 均以数字 id 引用，需用它
+    /// 反查 key（3C.7 P1 domain↔holder 校验、capital 解析）。
+    title_id: Option<String>,
     key: String,
     name: String,
     /// save（存档内直书）/ key（看起来像未本地化的键）/ unresolved
@@ -1318,7 +1404,25 @@ struct TitleEntry {
     /// 当前持有者（顶层 holder 字段，仅当仍持有存在）
     holder_id: Option<String>,
     de_facto_liege_id: Option<String>,
+    // —— 3C.7 P1：头衔结构字段 ——
+    /// 顶层 capital= 字段（政权中心；3C.7 P1）。
+    capital_title_id: Option<String>,
+    /// 法理宗主（de jure liege；与 de facto liege 分开）。
+    de_jure_liege_id: Option<String>,
+    /// 法理封臣（de jure vassals 数字 id 列表）。
+    de_jure_vassal_ids: Vec<String>,
+    /// 仅拥宣称者（claim 数字 id 列表；与人物实际持有分开）。
+    claimant_ids: Vec<String>,
+    /// 政体历史（保留原始形态，Python 侧不据此生成复杂文案）。
+    history_government: Vec<GovernmentHistoryEntry>,
     history: Vec<TitleHistoryEntry>,
+}
+
+/// 单条政体历史：存档中通常为单值标量（date=None）；兼容 `{ date=government … }` 块形态。
+#[derive(Serialize)]
+struct GovernmentHistoryEntry {
+    date: Option<String>,
+    government: String,
 }
 
 #[derive(Serialize)]
@@ -1399,8 +1503,15 @@ fn extract_balanced(text: &str, open_idx: usize) -> Option<(&str, usize)> {
     None
 }
 
-/// 提取顶层（深度 0）的 {…} 块列表。
-fn extract_top_level_blocks(s: &str) -> Vec<&str> {
+/// 顶层块（深度 0 的 `{…}` 块），附带块前的数字 id（`15120={ key=… }` 的 `15120`）。
+struct TopBlock<'a> {
+    /// 块前的数字 id；非数字前缀（如仅 `{…}` 匿名块）为 None。
+    id: Option<String>,
+    block: &'a str,
+}
+
+/// 提取顶层（深度 0）的 {…} 块列表，并捕获每个块前的数字 id。
+fn extract_top_level_blocks(s: &str) -> Vec<TopBlock<'_>> {
     let bytes = s.as_bytes();
     let mut blocks = Vec::new();
     let mut depth = 0i64;
@@ -1417,7 +1528,10 @@ fn extract_top_level_blocks(s: &str) -> Vec<&str> {
                 depth -= 1;
                 if depth == 0 {
                     if let Some(st) = start {
-                        blocks.push(&s[st..=i]);
+                        blocks.push(TopBlock {
+                            id: block_title_id(&s[..st]),
+                            block: &s[st..=i],
+                        });
                     }
                     start = None;
                 }
@@ -1426,6 +1540,24 @@ fn extract_top_level_blocks(s: &str) -> Vec<&str> {
         }
     }
     blocks
+}
+
+/// 提取 `…数字…={` 序列末尾的数字（`0={…}\n1={` 的 `1`、`15120={ key=… }` 的 `15120`）。
+///
+/// 注意：prefix 可能包含**之前所有块**的文本（`0={…}\n1=`），因此必须取**末尾**连续数字，
+/// 不能取开头数字（否则每块都误取成第一个块的 id）。
+fn block_title_id(prefix: &str) -> Option<String> {
+    let t = prefix.trim().trim_end_matches('=').trim_end();
+    let start = t
+        .rfind(|c: char| !c.is_ascii_digit())
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let digits = &t[start..];
+    if !digits.is_empty() {
+        Some(digits.to_string())
+    } else {
+        None
+    }
 }
 
 /// 在 block 中查找独立键 key（前导为空白/‘{’/‘=’/行首），返回 ‘key=’ 之后（等号后）的位置。
@@ -1482,6 +1614,24 @@ fn grab_num(block: &str, key: &str) -> Option<String> {
     } else {
         Some(digits)
     }
+}
+
+/// 取 `key=数字` 的值（真实名 / 占位 token 双候选）。
+fn grab_num_any(block: &str, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| grab_num(block, k))
+}
+
+/// 取 `key={ id1 id2 … }` 块内部的裸数字 id 列表（真实名 / 占位 token 双候选）。
+/// 用配平块提取限定范围，避免把后续字段（如 claim={ … }）的 id 一并误收。
+fn grab_num_list_any(block: &str, keys: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(pos) = find_kv_any(block, keys)
+        && let Some(open) = block[pos..].find('{')
+        && let Some((blk, _)) = extract_balanced(&block[pos..], open)
+    {
+        out.extend(bare_id_tokens(&blk[1..blk.len().saturating_sub(1)]));
+    }
+    out
 }
 
 /// 在 s 的 i 位置尝试解析 YYYY.MM.DD，返回 (日期串, 日期后位置)。
@@ -1613,6 +1763,58 @@ fn parse_title_history(inner: &str) -> Vec<TitleHistoryEntry> {
     out.sort_by_key(|a| ck3_date_key(&a.date));
     out
 }
+/// 解析头衔块的政体历史字段（3C.7 P1）。
+///
+/// 真实存档（CK3 1.19.0.6）中 `history_government=` 为**单值标量**
+/// （如 `history_government=theocracy_government`），记录当前生效政体；
+/// 兼容 `{ date=government … }` 块形态（date 可为数字 0 表示初始值），
+/// 两条路径都只抄原始值，不做任何政体语义推导。
+fn parse_history_government(block: &str) -> Vec<GovernmentHistoryEntry> {
+    if let Some(inner) = extract_kv_block_any(block, K_HISTORY_GOVERNMENT) {
+        // 块形态：`{ 0=feudal 1066.1.1=tribal }` —— 逐行解析 date/数字键 = 政体值。
+        let mut out = Vec::new();
+        for line in inner.lines() {
+            let t = line.trim().trim_matches('"');
+            if t.is_empty() || t.starts_with('{') || t.starts_with('}') {
+                continue;
+            }
+            if let Some(eq) = t.find('=') {
+                let key = t[..eq].trim();
+                let gov = t[eq + 1..].trim().trim_matches('"');
+                if gov.is_empty() {
+                    continue;
+                }
+                // 键是日期串或数字（0 表示存档初始政体）；非日期数字也原样保留。
+                let date = if key.contains('.') {
+                    Some(key.to_string())
+                } else if key.chars().all(|c| c.is_ascii_digit()) {
+                    Some(format!("0.0.{}", key))
+                } else {
+                    None
+                };
+                out.push(GovernmentHistoryEntry {
+                    date,
+                    government: gov.to_string(),
+                });
+            }
+        }
+        out
+    } else if let Some(pos) = find_kv_any(block, K_HISTORY_GOVERNMENT) {
+        // 标量形态：`history_government=theocracy_government`。
+        let gov = read_token(block, pos).unwrap_or_default();
+        if gov.is_empty() {
+            Vec::new()
+        } else {
+            vec![GovernmentHistoryEntry {
+                date: None,
+                government: gov,
+            }]
+        }
+    } else {
+        Vec::new()
+    }
+}
+
 fn parse_title_block(block: &str) -> Option<TitleEntry> {
     let key = grab_quoted(block, "key")?;
     // holder / de_facto_liege 只应取自 history 块**之前**的顶层字段：
@@ -1622,6 +1824,13 @@ fn parse_title_block(block: &str) -> Option<TitleEntry> {
     let head = &block[..history_off];
     let holder = grab_num(head, "holder");
     let liege = grab_num(head, "de_facto_liege");
+    // 3C.7 P1：capital / de_jure_liege / de_jure_vassals / claim 均**不出现**于 history
+    // Format B 条目内（实测仅 type=/holder=），整块搜索安全；capital 实测位于 history 之后。
+    let capital = grab_num_any(block, K_CAPITAL);
+    let de_jure_liege = grab_num_any(block, K_DE_JURE_LIEGE);
+    let de_jure_vassals = grab_num_list_any(block, K_DE_JURE_VASSALS);
+    let claimants = grab_num_list_any(block, K_CLAIM);
+    let history_government = parse_history_government(block);
     let name = block
         .find("title_name_data={")
         .and_then(|off| {
@@ -1640,12 +1849,18 @@ fn parse_title_block(block: &str) -> Option<TitleEntry> {
     let name_source = title_name_source(&name, &key).to_string();
     let tier = title_tier(&key).to_string();
     Some(TitleEntry {
+        title_id: None,
         key: key.clone(),
         name,
         name_source,
         tier,
         holder_id: holder,
         de_facto_liege_id: liege,
+        capital_title_id: capital,
+        de_jure_liege_id: de_jure_liege,
+        de_jure_vassal_ids: de_jure_vassals,
+        claimant_ids: claimants,
+        history_government,
         history,
     })
 }
@@ -1656,8 +1871,11 @@ fn scan_titles(text: &str) -> TitlesOutput {
     let mut warnings = Vec::new();
     match find_landed_titles_inner(text) {
         Some(inner) => {
-            for block in extract_top_level_blocks(inner) {
-                if let Some(entry) = parse_title_block(block) {
+            for tb in extract_top_level_blocks(inner) {
+                if let Some(mut entry) = parse_title_block(tb.block) {
+                    // 3C.7 P1：记录数字 title id，供 domain↔holder 反查与
+                    // capital/de_jure_* 数字引用解析（存档内均以数字 id 互引）。
+                    entry.title_id = tb.id;
                     titles.push(entry);
                 }
             }
@@ -2318,6 +2536,7 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
     let (melted, unknown) = melt_save(&data)?;
     let text = String::from_utf8_lossy(&melted);
     let (save_version, game_version, date, player_name, mods) = scan_meta(&text);
+    let player_id = scan_played_character_id(&text);
     let (character_count, dead_count, records) = scan_characters_full(&text);
     let token_metrics = compute_token_metrics(&text);
     let entities = scan_entities(&text);
@@ -2339,6 +2558,7 @@ fn cmd_prepare(save_path: &Path, cache_dir: &Path, with_melted: bool) -> Result<
         game_version,
         date,
         player_name,
+        player_id,
         mod_count: mods.len(),
         mods: mods.clone(),
         character_count,
@@ -2586,6 +2806,7 @@ fn cmd_inspect(path: &Path) -> Result<(), String> {
     let (melted, unknown) = melt_save(&data)?;
     let text = String::from_utf8_lossy(&melted);
     let (save_version, game_version, date, player_name, mods) = scan_meta(&text);
+    let player_id = scan_played_character_id(&text);
     let (character_count, dead_count, records) = scan_characters_full(&text);
     let token_metrics = compute_token_metrics(&text);
     let token_source = detect_token_source(&token_metrics);
@@ -2596,6 +2817,7 @@ fn cmd_inspect(path: &Path) -> Result<(), String> {
         game_version,
         date,
         player_name,
+        player_id,
         mod_count: mods.len(),
         mods,
         character_count,
@@ -3888,6 +4110,171 @@ landed_titles={
                 .iter()
                 .any(|w| w.contains("container_not_found"))
         );
+    }
+
+    // ========================================================================
+    // 测试：3C.7 P1 头衔结构字段
+    // —— capital / de_jure_liege / de_jure_vassals / claim / history_government
+    // 均从 title 顶层字段提取（capital 实测位于 history 之后，仍整块搜索）。
+    // ========================================================================
+    const SAMPLE_TITLES_P1: &str = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="k_england"
+      de_jure_liege=113
+      de_jure_vassals={ 115 140 155 171 }
+      holder=20621
+      date=927.7.12
+      history={ 927.7.12=20621 }
+      capital=281
+      claim={ 22156 22696 22990 }
+      history_government=feudal_government
+    }
+    1={
+      key="c_rome"
+      history={ 30.1.1=26 }
+    }
+  }
+}
+"#;
+
+    #[test]
+    fn scan_titles_exposes_capital_de_jure_vassals_claims_and_history_government() {
+        let out = scan_titles(SAMPLE_TITLES_P1);
+        assert!(out.warnings.is_empty(), "warnings: {:?}", out.warnings);
+        let england = out.titles.iter().find(|t| t.key == "k_england").unwrap();
+        // 数字 title id 用于 domain↔holder 反查（存档内以数字 id 互引）。
+        assert_eq!(england.title_id.as_deref(), Some("0"));
+        // 后续块不得误取成第一个块的 id（prefix 含前面全部块文本）。
+        let rome = out.titles.iter().find(|t| t.key == "c_rome").unwrap();
+        assert_eq!(rome.title_id.as_deref(), Some("1"));
+        // capital 位于 history 之后仍能抓到（整块搜索）。
+        assert_eq!(england.capital_title_id.as_deref(), Some("281"));
+        assert_eq!(england.de_jure_liege_id.as_deref(), Some("113"));
+        assert_eq!(england.de_jure_vassal_ids, vec!["115", "140", "155", "171"]);
+        assert_eq!(england.claimant_ids, vec!["22156", "22696", "22990"]);
+        // 政体历史：标量形态 → 单条 date=None。
+        assert_eq!(england.history_government.len(), 1);
+        assert_eq!(
+            england.history_government[0].government,
+            "feudal_government"
+        );
+        assert_eq!(england.history_government[0].date, None);
+        // 无这些字段的头衔 → 安全空值，不伪造。
+        let rome = out.titles.iter().find(|t| t.key == "c_rome").unwrap();
+        assert_eq!(rome.capital_title_id, None);
+        assert_eq!(rome.de_jure_liege_id, None);
+        assert!(rome.de_jure_vassal_ids.is_empty());
+        assert!(rome.claimant_ids.is_empty());
+        assert!(rome.history_government.is_empty());
+    }
+
+    #[test]
+    fn scan_titles_parses_history_government_block_form() {
+        // 兼容形态：`history_government={ 0=feudal 1066.1.1=tribal }`。
+        let sample = r#"
+landed_titles={
+  landed_titles={
+    0={
+      key="k_normandy"
+      history_government={
+        0=feudal
+        1066.1.1=tribal
+      }
+    }
+  }
+}
+"#;
+        let out = scan_titles(sample);
+        let t = &out.titles[0];
+        assert_eq!(t.history_government.len(), 2);
+        assert_eq!(t.history_government[0].government, "feudal");
+        assert_eq!(t.history_government[0].date.as_deref(), Some("0.0.0"));
+        assert_eq!(t.history_government[1].government, "tribal");
+        assert_eq!(t.history_government[1].date.as_deref(), Some("1066.1.1"));
+    }
+
+    #[test]
+    fn scan_played_character_id_finds_current_player() {
+        // 存档根部 played_character 容器：character= 顶层字段即当前玩家 id；
+        // legacy 子块内的 character= 不应被误取。
+        let sample = r#"
+played_character={
+  name="kdhb"
+  character=20423
+  player=1
+  legacy={ {
+      character=99999
+      date=937.2.1
+    }
+ }
+}
+"#;
+        assert_eq!(scan_played_character_id(sample).as_deref(), Some("20423"));
+        assert_eq!(scan_played_character_id("version=1.19.0.6\n"), None);
+    }
+
+    #[test]
+    fn scan_characters_full_exposes_was_player_and_domain() {
+        let sample = r#"
+character={
+  living={
+    20423={
+      first_name="克贞"
+      landed_data={
+        domain={ 15120 15122 15225 15123 }
+        became_ruler_date=937.2.1
+        government=celestial_government
+      }
+      playable_data={
+        knights={ 22139 19913 }
+        was_player=yes
+        legitimacy=650
+      }
+    }
+    5={
+      first_name="路人"
+    }
+  }
+}
+"#;
+        let (count, _dead, records) = scan_characters_full(sample);
+        assert_eq!(count, 2);
+        let p = records.iter().find(|r| r.id == "20423").unwrap();
+        assert!(p.ruler, "landed_data 存在 → ruler");
+        assert!(p.was_player, "playable_data.was_player=yes 应被扫出");
+        assert_eq!(p.domain_titles, vec!["15120", "15122", "15225", "15123"]);
+        let other = records.iter().find(|r| r.id == "5").unwrap();
+        assert!(!other.was_player);
+        assert!(other.domain_titles.is_empty());
+    }
+
+    #[test]
+    fn scan_characters_full_exposes_domain_in_placeholder_token_form() {
+        // 占位 token 表构建下：容器与字段键均为 tXXXX（landed_data=t2753,
+        // domain=t27e6, playable_data=t2754, was_player=t32b0）。
+        let sample = r#"
+character={
+  t2ce6={
+    20423={
+      first_name="克贞"
+      t2753={
+        t27e6={ 15120 15122 }
+        became_ruler_date=937.2.1
+      }
+      t2754={
+        t32b0=yes
+      }
+    }
+  }
+}
+"#;
+        let (count, _dead, records) = scan_characters_full(sample);
+        assert_eq!(count, 1);
+        let p = &records[0];
+        assert!(p.was_player);
+        assert_eq!(p.domain_titles, vec!["15120", "15122"]);
     }
 
     // ========================================================================

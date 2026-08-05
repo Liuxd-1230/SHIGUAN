@@ -26,7 +26,10 @@ from app.services.save_registry import SaveStillWritingError
 # 扫描/提取行为变更时递增，旧缓存（无此字段或值不匹配）自动失效重建。
 # v3（3C-Audit）：titles.json history 条目新增 raw_type（存档显式 type 原样保留），
 # 并修复 Format A 行尾跳跃丢条（明文存档 history 多条目同行），旧缓存需重建。
-CACHE_SCHEMA_VERSION = "3"
+# v4（3C.7 P1）：reader 新增 was_player / domain_titles（人物）与 capital /
+# de_jure_liege / de_jure_vassals / claim / history_government（头衔），
+# meta.json 新增 player_id（played_character.character），旧缓存需重建。
+CACHE_SCHEMA_VERSION = "4"
 
 
 @dataclass

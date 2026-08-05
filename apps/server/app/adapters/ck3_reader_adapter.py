@@ -123,5 +123,7 @@ class Ck3ReaderAdapter:
             saveVersion=inspect.get("save_version"),
             gameVersion=inspect.get("game_version"),
             date=inspect.get("date"),
-            # playerId 需后续从字符索引中按 player_name 解析；此处留空
+            # 3C.7 P1：reader meta 现在直接给出当前玩家人物 id
+            # （存档根部 played_character.character），不再长期为空。
+            playerId=inspect.get("player_id"),
         )
