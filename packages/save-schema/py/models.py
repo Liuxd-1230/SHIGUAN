@@ -433,6 +433,10 @@ class TitleClassification(BaseModel):
     # 展示名（TitleDisplayResolver 产出：存档直书 → 本地化 → def → 原 key 回退）。
     displayName: str
     tier: Optional[TitleTier] = None
+    # 霸权（hegemony）头衔：h_* 是 CK3 游戏自身的"霸权/超帝国"命名空间
+    # （game_concept_hegemony，如 h_china 唐 / h_roman_empire 罗马帝国）。
+    # 由 key 前缀确定性判定，任何 h_* 一律成立，不针对具体头衔。
+    isHegemony: bool = False
     # 判据与来源规则（如 base-game.yml:vanilla_landed_k、heuristic:liege_adjust）。
     signals: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
@@ -450,6 +454,8 @@ class CharacterIdentity(BaseModel):
     realmStatus: RealmStatus
     primaryRealmTitle: Optional[EntityRef] = None
     primaryOffice: Optional[EntityRef] = None
+    # 主身份头衔是否为霸权（h_* 超帝国）头衔；True 时前端展示「霸权」标识。
+    isHegemony: bool = False
     # 次要看点（如多主权领地的其余领地、兼任的机构等），均为确定性文案。
     secondaryIdentities: List[str] = Field(default_factory=list)
     confidence: Confidence

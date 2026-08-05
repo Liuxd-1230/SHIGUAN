@@ -265,3 +265,42 @@ def test_relationship_memory_types_and_skipped_types_are_contract_stable():
         "became_soulmates", "became_lovers", "became_friends", "became_rivals",
     }
     assert SKIPPED_TYPES >= {"imprisoned", "ascended_throne_memory"}
+
+
+def test_memory_index_surname_appended_to_relationship_refs():
+    """2C.2：MemoryTimelineIndex 传入 resolver 后，关系人引用拼接已解析姓。"""
+    from app.services.localization import LocalizationLoader
+    from app.services.entity_index_builder import EntityIndexBuilder, ReferenceResolver
+    from app.services.game_def_loader import GameDefLoader
+
+    loc = LocalizationLoader()
+    loc._ingest_text("l_simp_chinese:\n dynn_liang205: \"梁\"\n")
+    g = GameDefLoader(None)
+    g._maps = {"house": {"9": "dynn_liang205"}}
+    raw = {
+        "schema_version": 1, "reader_version": "0.1.0", "scan_ms": 1.0, "warnings": [],
+        "kinds": {
+            "house": {"source": "save:dynasties.dynasty_house", "container_found": True,
+                      "count": 1, "unresolved_key_count": 0,
+                      "entries": {"9": {"key": "9", "key_kind": "def"}}},
+            "dynasty": {"source": "x", "container_found": True, "count": 0,
+                         "unresolved_key_count": 0, "entries": {}},
+        },
+    }
+    resolver = ReferenceResolver(EntityIndexBuilder(game_def=g, loc=loc).build(raw))
+
+    by_id = dict(BY_ID)
+    by_id["2"]["dynasty"] = "9"  # Bob 属于「梁」氏
+    memories = {
+        "memories": [
+            _memory("40", "became_friends", [("new_relation", "2")], "770.1.1", "900.1.1"),
+            _memory("41", "became_friends", [("new_relation", "1")], "770.1.1", "900.1.1"),
+        ],
+        "warnings": [],
+    }
+    idx = MemoryTimelineIndex(memories, by_id=by_id, loc=LOC, resolver=resolver)
+    alice_rel = idx.relationships("1")
+    friend = alice_rel.friends[0]
+    assert friend.name == "梁鲍勃"
+    assert friend.dynasty is not None
+    assert friend.dynasty.name == "梁"

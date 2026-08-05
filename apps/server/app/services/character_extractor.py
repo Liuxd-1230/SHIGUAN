@@ -124,16 +124,47 @@ def _resolve_char_name_resolved(
 
 
 def _character_ref_for(
-    cid, source_path: str, by_id=None, loader: Optional[LocalizationLoader] = None
+    cid,
+    source_path: str,
+    by_id=None,
+    loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> CharacterRef:
     """统一构建人物引用：by_id 人物索引 + loader 解析可读名，resolved 如实标注。
 
     M5.1：父母 / 子女 / 兄弟姐妹 / 好友 / 宿敌 / 恋人等一律经此构建；
     名字不可解析时 name=原始 id 且 resolved=False，绝不编造占位姓名。
+    2C.2：resolver 存在时把已解析的姓（house/dynasty）拼到名上（与前端
+    displayName 同规则：姓解析成功且与名不同才拼接），并把 dynasty 一并填入。
     """
     cid_s = str(cid)
     name, resolved = _resolve_char_name_resolved(cid, by_id, loader)
-    return CharacterRef(id=cid_s, name=name, sourcePath=source_path, resolved=resolved)
+    ref = CharacterRef(id=cid_s, name=name, sourcePath=source_path, resolved=resolved)
+    if resolver is not None:
+        return _append_surname(ref, (by_id or {}).get(cid_s), loader, resolver)
+    return ref
+
+
+def _append_surname(
+    ref: CharacterRef,
+    stub: Optional[dict],
+    loader: Optional[LocalizationLoader],
+    resolver: ReferenceResolver,
+) -> CharacterRef:
+    """把已解析的姓（house/dynasty）拼到人物引用名上，并填入 dynasty 字段。
+
+    与前端 displayName 同规则：姓已解析、非空、且与名不同（以本人命名的王朝不重复
+    拼接）才拼接。名本身未解析（resolved=False，如 name=原始 id）时不拼姓——
+    避免出现「梁20423」这类半截姓名，不伪造。
+    """
+    if not stub or not ref.resolved:
+        return ref
+    dyn = _dynasty_entity(stub.get("dynasty"), loader, resolver)
+    if dyn is not None and dyn.resolved and dyn.name and dyn.name != ref.name:
+        return ref.model_copy(
+            update={"name": f"{dyn.name}{ref.name}", "dynasty": dyn}
+        )
+    return ref
 
 
 def _dedupe_by_id(refs: list[CharacterRef]) -> list[CharacterRef]:
@@ -152,12 +183,14 @@ def derive_siblings(
     stub: dict,
     by_id: Optional[dict] = None,
     loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> list[CharacterRef]:
     """由共享父母推导兄弟姐妹（M4）。
 
     CK3 存档没有直述的 sibling 字段；兄弟姐妹 = 与该人物共享父亲或母亲的其他人物。
     人物不在索引中 → 跳过（不伪造）；推断结果由调用方按需标注。
     M5.1：名字经 by_id + loader 解析（unresolved → 原 id + resolved=False）。
+    2C.2：姓解析后拼接（梁氏兄弟姐妹带「梁」）。
     """
     cid = str(stub.get("id"))
     if not by_id:
@@ -184,6 +217,7 @@ def derive_siblings(
                 f"character/{cid}/siblings/{other_id}#inferred_from_shared_parent",
                 by_id,
                 loader,
+                resolver,
             )
         )
     out.sort(key=lambda r: r.id)
@@ -194,6 +228,7 @@ def derive_extended_relations(
     stub: dict,
     by_id: Optional[dict] = None,
     loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> list[CharacterRef]:
     """血缘远近 + 姻亲（2C.1，写史书所需的家族网补充）。
 
@@ -283,6 +318,7 @@ def derive_extended_relations(
                     f"character/{cid}/relatives/{rid}#inferred_from_{kind}",
                     by_id,
                     loader,
+                    resolver,
                 )
             )
     out.sort(key=lambda r: r.id)
@@ -385,7 +421,8 @@ def _nickname_entity(
 
 
 def _liege_ref(
-    stub: dict, by_id=None, loader: Optional[LocalizationLoader] = None
+    stub: dict, by_id=None, loader: Optional[LocalizationLoader] = None,
+    resolver: Optional[ReferenceResolver] = None,
 ) -> Optional[CharacterRef]:
     """君主（2C.1）：dead_data.liege，卒年记录其君主。名字经索引解析，未命中保留原 id。"""
     liege = stub.get("liege")
@@ -396,6 +433,7 @@ def _liege_ref(
         f"character/{stub.get('id')}/dead_data/liege",
         by_id,
         loader,
+        resolver,
     )
 
 
@@ -612,11 +650,15 @@ def to_summary(
     )
 
 
-def _relationship_period(cid: str, rel_id, rtype: RelationshipType, source_path: str, by_id=None, loader=None, is_former: bool = False) -> RelationshipPeriod:
-    """构造一段关系（M4：名字经会话索引解析，不再裸 id；former 关系带 isFormer）。"""
+def _relationship_period(cid: str, rel_id, rtype: RelationshipType, source_path: str, by_id=None, loader=None, is_former: bool = False, resolver: Optional[ReferenceResolver] = None) -> RelationshipPeriod:
+    """构造一段关系（M4：名字经会话索引解析，不再裸 id；former 关系带 isFormer）。
+
+    2C.2：经 _character_ref_for 统一解析并拼接姓（配偶带姓，如「章庄」无姓则不带）。
+    """
+    ref = _character_ref_for(rel_id, source_path, by_id, loader, resolver)
     return RelationshipPeriod(
         characterId=str(rel_id),
-        name=_resolve_char_name(rel_id, by_id, loader),
+        name=ref.name,
         type=rtype,
         confidence=Confidence.CONFIRMED,
         sourcePath=source_path,
@@ -670,13 +712,13 @@ def to_profile(
     if stub.get("father"):
         parents.append(
             _character_ref_for(
-                stub["father"], f"character/{cid}/father{suffix}", by_id, loader
+                stub["father"], f"character/{cid}/father{suffix}", by_id, loader, resolver
             )
         )
     if stub.get("mother"):
         parents.append(
             _character_ref_for(
-                stub["mother"], f"character/{cid}/mother{suffix}", by_id, loader
+                stub["mother"], f"character/{cid}/mother{suffix}", by_id, loader, resolver
             )
         )
     if stub.get("real_father"):
@@ -686,6 +728,7 @@ def to_profile(
                 f"character/{cid}/family_data/real_father",
                 by_id,
                 loader,
+                resolver,
             )
         )
     parents = _dedupe_by_id(parents)
@@ -697,14 +740,14 @@ def to_profile(
         spouses.append(
             _relationship_period(
                 cid, s, RelationshipType.SPOUSE, f"character/{cid}/spouse/{s}",
-                by_id, loader,
+                by_id, loader, resolver=resolver,
             )
         )
     for s in stub.get("former_spouses", []) or []:
         spouses.append(
             _relationship_period(
                 cid, s, RelationshipType.SPOUSE, f"character/{cid}/former_spouses/{s}",
-                by_id, loader, is_former=True,
+                by_id, loader, is_former=True, resolver=resolver,
             )
         )
     betrothed = stub.get("betrothed")
@@ -712,42 +755,42 @@ def to_profile(
         spouses.append(
             _relationship_period(
                 cid, betrothed, RelationshipType.BETROTHED,
-                f"character/{cid}/betrothed", by_id, loader,
+                f"character/{cid}/betrothed", by_id, loader, resolver=resolver,
             )
         )
     for s in stub.get("concubines", []) or []:
         spouses.append(
             _relationship_period(
                 cid, s, RelationshipType.CONCUBINE,
-                f"character/{cid}/concubine/{s}", by_id, loader,
+                f"character/{cid}/concubine/{s}", by_id, loader, resolver=resolver,
             )
         )
     if stub.get("concubinist"):
         spouses.append(
             _relationship_period(
                 cid, stub["concubinist"], RelationshipType.CONCUBINE,
-                f"character/{cid}/concubinist", by_id, loader,
+                f"character/{cid}/concubinist", by_id, loader, resolver=resolver,
             )
         )
     for s in stub.get("former_concubines", []) or []:
         spouses.append(
             _relationship_period(
                 cid, s, RelationshipType.CONCUBINE,
-                f"character/{cid}/former_concubines/{s}", by_id, loader, is_former=True,
+                f"character/{cid}/former_concubines/{s}", by_id, loader, is_former=True, resolver=resolver,
             )
         )
     for s in stub.get("former_concubinists", []) or []:
         spouses.append(
             _relationship_period(
                 cid, s, RelationshipType.CONCUBINE,
-                f"character/{cid}/former_concubinists/{s}", by_id, loader, is_former=True,
+                f"character/{cid}/former_concubinists/{s}", by_id, loader, is_former=True, resolver=resolver,
             )
         )
 
     children: list[CharacterRef] = []
     for c in stub.get("children", []) or []:
         children.append(
-            _character_ref_for(c, f"character/{cid}/child/{c}", by_id, loader)
+            _character_ref_for(c, f"character/{cid}/child/{c}", by_id, loader, resolver)
         )
     children = _dedupe_by_id(children)
 
@@ -810,10 +853,10 @@ def to_profile(
         parents=parents,
         spouses=spouses,
         children=children,
-        siblings=derive_siblings(stub, by_id, loader),  # M4：共享父母推导（含推断标注）
+        siblings=derive_siblings(stub, by_id, loader, resolver),  # M4：共享父母推导（含推断标注）
         # 2C.1：君主（dead_data.liege，卒年记录）；血缘远近 + 姻亲（推断标注）。
-        liege=_liege_ref(stub, by_id, loader),
-        relatives=derive_extended_relations(stub, by_id, loader),
+        liege=_liege_ref(stub, by_id, loader, resolver),
+        relatives=derive_extended_relations(stub, by_id, loader, resolver),
         friends=friends,
         rivals=rivals,
         lovers=lovers,

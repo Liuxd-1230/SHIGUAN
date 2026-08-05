@@ -384,12 +384,13 @@ def _drop_title_index(save_id: str) -> None:
             del _title_index_cache[k]
 
 
-def _memory_index(sess, save_id: str) -> tuple[MemoryTimelineIndex, list[str]]:
+def _memory_index(sess, save_id: str, resolver=None) -> tuple[MemoryTimelineIndex, list[str]]:
     """构建（或复用）该存档的记忆索引：memories.json + 人物索引 + 本地化。
 
     返回 (index, scanner_warnings)。一次反解后按 (save_id, signature) 缓存；
     档案页与 memories 端点共享，绝不重复扫描 memories.json，也不重新 melt。
     人物名解析只依赖人物索引 stub + 本地化表，无需 GameDefLoader。
+    2C.2：resolver 来自实体索引（同一 save 下确定性，故缓存安全），供引用名拼姓。
     """
     key = (save_id, sess.signature)
     cached = _memory_index_cache.get(key)
@@ -401,7 +402,7 @@ def _memory_index(sess, save_id: str) -> tuple[MemoryTimelineIndex, list[str]]:
     descriptors = _descriptors_from_meta(meta)
     report = _mod_resolver().resolve(descriptors, game_version)
     loader = _build_localization(save_id, sess.signature, report.required)
-    index = MemoryTimelineIndex(raw, by_id=sess.by_id, loc=loader)
+    index = MemoryTimelineIndex(raw, by_id=sess.by_id, loc=loader, resolver=resolver)
     scanner_warnings = list(raw.get("warnings") or [])
     _memory_index_cache[key] = (index, scanner_warnings)
     return index, scanner_warnings
@@ -497,7 +498,7 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
         title_warnings = title_index.warnings(character_id)
     memory_index = None
     try:
-        memory_index, _ = _memory_index(sess, save_id)
+        memory_index, _ = _memory_index(sess, save_id, resolver=resolver)
     except (ReaderExecutionError, ReaderMissingError):
         memory_index = None
     return (
@@ -990,8 +991,14 @@ def _search_text_resolver(sess, save_id: str, title_index, loader, resolver=None
         parts: list[str] = []
         nk = str(stub.get("name") or "")
         if nk:
-            parts.append(_name(nk))
+            resolved = _name(nk)
+            parts.append(resolved)
             parts.append(nk)  # 原始键（拼音）也可搜索
+            # 2C.2：姓+名全称（如「梁克贞」）也进搜索文本（姓解析成功且与名不同时）。
+            if resolver is not None and resolved:
+                dyn = _dynasty_entity(stub.get("dynasty"), loader, resolver)
+                if dyn is not None and dyn.resolved and dyn.name and dyn.name != resolved:
+                    parts.append(f"{dyn.name}{resolved}")
         # 2C.1：绰号解析名进搜索（nick_the_peaceful → 「仁」）。
         nknick = stub.get("nickname")
         if nknick:
@@ -1169,8 +1176,13 @@ def character_memories_endpoint(save_id: str, character_id: str):
     - warnings 含 Rust 扫描告警 + 推断告警。
     """
     _rec, sess = _ensure_session(save_id)
+    loader = _ensure_loader(sess, save_id)
     try:
-        index, scanner_warnings = _memory_index(sess, save_id)
+        resolver = _entity_resolver(sess, save_id, loader)
+    except (ReaderExecutionError, ReaderMissingError):
+        resolver = None
+    try:
+        index, scanner_warnings = _memory_index(sess, save_id, resolver=resolver)
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
     rel = index.relationships(character_id)

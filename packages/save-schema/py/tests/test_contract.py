@@ -577,27 +577,41 @@ def test_acquisition_cause_enum_values():
 
 def test_title_classification_roundtrip():
     tc = TitleClassification(
-        titleId="k_dali",
+        titleId="h_china",
         semanticType=TitleSemanticType.SOVEREIGN_REALM_TITLE,
         confidence=Confidence.CONFIRMED,
-        displayName="大理",
-        tier=TitleTier.KINGDOM,
+        displayName="唐",
+        tier=TitleTier.EMPIRE,
+        isHegemony=True,
         signals=["key_prefix", "de_facto_liege"],
-        sourceRule="base-game.yml:vanilla_landed_k",
+        sourceRule="base-game.yml:vanilla_super_empire",
     )
     dumped = tc.model_dump(mode="json")
     tc2 = TitleClassification.model_validate(dumped)
     assert tc2.semanticType == TitleSemanticType.SOVEREIGN_REALM_TITLE
-    assert tc2.displayName == "大理"
-    assert tc2.sourceRule == "base-game.yml:vanilla_landed_k"
+    assert tc2.displayName == "唐"
+    assert tc2.sourceRule == "base-game.yml:vanilla_super_empire"
+    assert tc2.isHegemony is True
+
+
+def test_title_classification_hegemony_default_false():
+    tc = TitleClassification(
+        titleId="k_dali",
+        semanticType=TitleSemanticType.SOVEREIGN_REALM_TITLE,
+        confidence=Confidence.CONFIRMED,
+        displayName="大理",
+    )
+    assert tc.isHegemony is False
+    assert "isHegemony" in tc.model_dump(mode="json")
 
 
 def test_character_identity_roundtrip():
     ident = CharacterIdentity(
-        headlineIdentity="大理的最高统治者",
+        headlineIdentity="唐的最高统治者",
         realmStatus=RealmStatus.INDEPENDENT_RULER,
-        primaryRealmTitle=EntityRef(id="k_dali", name="大理", type="title"),
-        secondaryIdentities=["安南的最高统治者"],
+        primaryRealmTitle=EntityRef(id="h_china", name="唐", type="title"),
+        isHegemony=True,
+        secondaryIdentities=["罗马帝国的最高统治者"],
         confidence=Confidence.CONFIRMED,
         evidence=[
             EvidenceRef(
@@ -611,8 +625,9 @@ def test_character_identity_roundtrip():
     dumped = ident.model_dump(mode="json")
     ident2 = CharacterIdentity.model_validate(dumped)
     assert ident2.realmStatus == RealmStatus.INDEPENDENT_RULER
-    assert ident2.primaryRealmTitle.name == "大理"
-    assert ident2.headlineIdentity == "大理的最高统治者"
+    assert ident2.primaryRealmTitle.name == "唐"
+    assert ident2.headlineIdentity == "唐的最高统治者"
+    assert ident2.isHegemony is True
 
 
 def test_historical_semantic_event_roundtrip():

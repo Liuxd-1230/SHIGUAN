@@ -489,6 +489,8 @@ export interface TitleClassification {
   /** 展示名（TitleDisplayResolver：存档直书 → 本地化 → def → 原 key 回退）。 */
   displayName: string;
   tier?: TitleTier;
+  /** 霸权（hegemony）头衔：h_* 是 CK3 游戏自身的“霸权/超帝国”命名空间（如 h_china 唐）。 */
+  isHegemony?: boolean;
   /** 判据（key_prefix / tier / de_facto_liege / name …）与来源规则。 */
   signals?: string[];
   warnings?: string[];
@@ -501,6 +503,8 @@ export interface CharacterIdentity {
   realmStatus: RealmStatus;
   primaryRealmTitle?: EntityRef;
   primaryOffice?: EntityRef;
+  /** 主身份头衔是否为霸权（h_* 超帝国）头衔；True 时前端展示「霸权」标识。 */
+  isHegemony?: boolean;
   /** 次要看点（多主权领地的其余领地、兼任机构等），确定性文案。 */
   secondaryIdentities?: string[];
   confidence: Confidence;

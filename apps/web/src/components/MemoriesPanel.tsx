@@ -121,6 +121,8 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
 
   const hasAny =
     spouseGroups.length > 0 ||
+    (profile.parents?.length ?? 0) > 0 ||
+    (profile.children?.length ?? 0) > 0 ||
     (profile.siblings?.length ?? 0) > 0 ||
     (profile.relatives?.length ?? 0) > 0 ||
     profile.liege != null ||
@@ -148,6 +150,8 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
       </p>
 
       {(spouseGroups.length > 0 ||
+        (profile.parents?.length ?? 0) > 0 ||
+        (profile.children?.length ?? 0) > 0 ||
         (profile.siblings?.length ?? 0) > 0 ||
         (profile.relatives?.length ?? 0) > 0 ||
         profile.liege != null ||
@@ -155,6 +159,8 @@ export default function MemoriesPanel({ profile }: { profile: CharacterProfile }
         (profile.rivals?.length ?? 0) > 0 ||
         (profile.lovers?.length ?? 0) > 0) && (
         <div className="mt-3 space-y-3">
+          <RelationGroup title="父母" items={profile.parents ?? []} />
+          <RelationGroup title="子女" items={profile.children ?? []} />
           {spouseGroups.length > 0 && (
             <div>
               <h3 className="text-xs font-semibold tracking-wide text-ink-500">

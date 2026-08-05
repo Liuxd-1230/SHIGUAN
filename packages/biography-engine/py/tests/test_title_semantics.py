@@ -128,6 +128,15 @@ def test_super_empire_is_sovereign():
     classifier = TitleSemanticClassifier()
     c = classifier.classify(_entry("h_china", name="唐", name_source="save"))
     assert c.semanticType == TitleSemanticType.SOVEREIGN_REALM_TITLE
+    # 2C.2：h_* 是游戏自身霸权命名空间（game_concept_hegemony），一律标记霸权。
+    assert c.isHegemony is True
+
+
+def test_normal_empire_is_not_hegemony():
+    classifier = TitleSemanticClassifier()
+    c = classifier.classify(_entry("e_byzantium", name="拜占庭", name_source="save"))
+    assert c.semanticType == TitleSemanticType.SOVEREIGN_REALM_TITLE
+    assert c.isHegemony is False
 
 
 def test_nomad_camp_is_temporary():
@@ -375,6 +384,30 @@ def test_identity_former_ruler():
     ident = PrimaryIdentityResolver(cls).resolve(periods)
     assert ident.realmStatus == RealmStatus.FORMER_RULER
     assert "大理" in ident.headlineIdentity
+
+
+def test_identity_hegemony_ruler():
+    """2C.2：持有霸权（h_*）头衔 → 身份标记 isHegemony，供前端展示「霸权」。"""
+    entries = [_entry("h_china", tier="empire", liege=None, name="唐", name_source="save")]
+    cls = _classify_save(entries)
+    from models import TitlePeriod
+
+    periods = [TitlePeriod(titleId="h_china", name="唐", tier=None, isCurrent=True)]
+    ident = PrimaryIdentityResolver(cls).resolve(periods)
+    assert ident.realmStatus == RealmStatus.INDEPENDENT_RULER
+    assert ident.headlineIdentity == "唐的最高统治者"
+    assert ident.isHegemony is True
+
+
+def test_identity_plain_empire_not_hegemony():
+    entries = [_entry("e_byzantium", tier="empire", liege=None, name="拜占庭", name_source="save")]
+    cls = _classify_save(entries)
+    from models import TitlePeriod
+
+    periods = [TitlePeriod(titleId="e_byzantium", name="拜占庭", tier=None, isCurrent=True)]
+    ident = PrimaryIdentityResolver(cls).resolve(periods)
+    assert ident.realmStatus == RealmStatus.INDEPENDENT_RULER
+    assert ident.isHegemony is False
 
 
 def test_identity_courtier_with_past_office_only():

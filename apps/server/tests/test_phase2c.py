@@ -216,6 +216,8 @@ def test_search_text_resolver_matches_resolved_names(monkeypatch):
     assert "梁" in text  # 解析后的王朝名
     assert "汉" in text  # 解析后的文化名
     assert "景教" in text  # 解析后的信仰名
+    # 2C.2：姓+名全称（如「梁克贞」）也进搜索文本，可直接按全名搜索。
+    assert "梁克贞" in text
     # 数字 id 仍可搜索（兼容旧行为）
     assert "9067" in text
 

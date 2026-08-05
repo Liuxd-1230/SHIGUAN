@@ -160,6 +160,25 @@ describe("MemoriesPanel（M4 关系与记忆）", () => {
     expect(screen.getByText("日期不详")).toBeTruthy();
   });
 
+  it("父母/子女分组展示（2C.2：引用名已含姓，如梁活）", () => {
+    render(
+      <MemoriesPanel
+        profile={profile({
+          parents: [{ id: "p1", name: "梁父" }],
+          children: [
+            { id: "c1", name: "梁活" },
+            { id: "c2", name: "梁吉定" },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("父母")).toBeTruthy();
+    expect(screen.getByText("梁父")).toBeTruthy();
+    expect(screen.getByText("子女")).toBeTruthy();
+    expect(screen.getByText("梁活")).toBeTruthy();
+    expect(screen.getByText("梁吉定")).toBeTruthy();
+  });
+
   it("未解析人名（name==id）标注（未解析）", () => {
     render(
       <MemoriesPanel

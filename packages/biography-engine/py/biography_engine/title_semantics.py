@@ -447,6 +447,9 @@ class TitleSemanticClassifier:
             confidence=confidence,
             displayName=display_name,
             tier=tier,
+            # 霸权（h_* 超帝国）头衔：CK3 游戏自身的命名空间（game_concept_hegemony），
+            # 由 key 前缀确定性判定，任何 h_* 一律成立，不针对具体头衔。
+            isHegemony=key.startswith("h_"),
             signals=signals,
             warnings=warnings,
             sourceRule=source_rule,
@@ -671,6 +674,8 @@ class PrimaryIdentityResolver:
                 headlineIdentity=headline,
                 realmStatus=status,
                 primaryRealmTitle=primary_ref,
+                # 2C.2：主身份头衔为霸权（h_* 超帝国）时置位，前端展示「霸权」标识。
+                isHegemony=cls_by_key[primary_key].isHegemony,
                 secondaryIdentities=secondary,
                 confidence=identity_confidence,
                 warnings=warnings,
@@ -734,6 +739,7 @@ class PrimaryIdentityResolver:
                     headlineIdentity=f"{last_cls.displayName}的前统治者",
                     realmStatus=RealmStatus.FORMER_RULER,
                     primaryRealmTitle=_entity_ref(last_cls),
+                    isHegemony=last_cls.isHegemony,
                     secondaryIdentities=[],
                     confidence=Confidence.INFERRED,
                     warnings=warnings + ["该人物无现任头衔；依据历史任期判定为前统治者。"],

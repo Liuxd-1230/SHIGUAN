@@ -48,7 +48,7 @@ from models import (
 
 from app.services.localization import LocalizationLoader
 from app.services.title_reign_extractor import _date_key
-from app.services.character_extractor import resolve_display_name
+from app.services.character_extractor import _dynasty_entity, resolve_display_name
 
 # 记忆类型 -> 主体角色（条目里“该记忆涉及的对象”的角色）。
 # married / child_born 这类“owner 在条目外”：主体角色是对方，owner 需交叉核对。
@@ -175,11 +175,14 @@ class MemoryTimelineIndex:
         raw_memories: dict,
         by_id: Optional[dict[str, dict]] = None,
         loc: Optional[LocalizationLoader] = None,
+        resolver=None,
     ) -> None:
         self._memories = list(raw_memories.get("memories") or [])
         self._raw_warnings = list(raw_memories.get("warnings") or [])
         self._by_id = by_id or {}
         self._loc = loc
+        # 2C.2：实体索引（house/dynasty 数字 id → 中文姓），用于引用名拼接姓。
+        self._resolver = resolver
         # family_data 交叉核对索引：spouse/child -> 谁把他们列为配偶/子女。
         self._spouse_to_chars: dict[str, list[str]] = {}
         self._child_to_chars: dict[str, list[str]] = {}
@@ -233,6 +236,12 @@ class MemoryTimelineIndex:
         )
 
     def _char_name(self, cid) -> str:
+        """返回人物可读名（2C.2：含已解析姓，如「梁谒之」）。
+
+        姓（house/dynasty）解析成功且与名不同才拼接（以本人命名的王朝不重复）；
+        名本身未解析（resolved=False）时不拼姓，避免「梁20423」半截姓名。
+        缓存完整名；resolved 语义独立维护（见 _resolved_cache）。
+        """
         cid = str(cid)
         if cid in self._name_cache:
             return self._name_cache[cid]
@@ -246,22 +255,33 @@ class MemoryTimelineIndex:
             # M5：统一名字解析（本地化 → 拼音hex 解码 → 原 key）。
             name = resolve_display_name(nk, self._loc)
             resolved = name != nk
-            self._resolved_cache[cid] = resolved
-            self._name_cache[cid] = name
-            return self._name_cache[cid]
-        self._resolved_cache[cid] = False
-        self._name_cache[cid] = cid
-        return cid
+        else:
+            name, resolved = cid, False
+        if resolved and self._resolver is not None:
+            dyn = _dynasty_entity(stub.get("dynasty"), self._loc, self._resolver)
+            if dyn is not None and dyn.resolved and dyn.name and dyn.name != name:
+                name = f"{dyn.name}{name}"
+        self._resolved_cache[cid] = resolved
+        self._name_cache[cid] = name
+        return self._name_cache[cid]
 
     def _char_ref(self, cid, source_path: Optional[str] = None) -> CharacterRef:
         cid_s = str(cid)
-        return CharacterRef(
+        ref = CharacterRef(
             id=cid_s,
             name=self._char_name(cid),
             sourcePath=source_path,
             # M5.1：resolved 如实标注（名字被本地化/hex 转换过才算已解析）。
             resolved=self._resolved_cache.get(cid_s, False),
         )
+        # 2C.2：把解析后的姓（house/dynasty）作为结构化字段一并填入引用。
+        if self._resolver is not None and ref.resolved:
+            stub = self._by_id.get(cid_s)
+            if stub:
+                dyn = _dynasty_entity(stub.get("dynasty"), self._loc, self._resolver)
+                if dyn is not None and dyn.resolved and dyn.name:
+                    ref = ref.model_copy(update={"dynasty": dyn})
+        return ref
 
     # -- 归属 ------------------------------------------------------------------
     def _attributions(self, m: dict) -> list[tuple[str, Optional[str]]]:

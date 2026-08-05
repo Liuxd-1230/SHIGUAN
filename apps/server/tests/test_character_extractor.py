@@ -300,3 +300,138 @@ def test_numeric_id_warning_message_explains_no_index():
     assert "数字 id" in w.message
     assert "不伪造" in w.message
     assert any(x.code == "unresolved_traits" for x in p.evidenceWarnings)
+
+
+
+
+# ---------------------------------------------------------------------------
+# 2C.2：姓（house/dynasty）解析后拼接到人物引用名
+# ---------------------------------------------------------------------------
+
+
+def _resolver_with_house(house_name: str = "梁"):
+    """构建实体索引：house 11527 → dynn_liang205 → 本地化 house_name。
+
+    stub.dynasty 实为 dynasty_house 数字 id；_dynasty_entity 先按 house 解析。
+    """
+    from models import EntityKind
+    from app.services.entity_index_builder import EntityIndexBuilder, ReferenceResolver
+    from app.services.game_def_loader import GameDefLoader
+
+    loc = LocalizationLoader()
+    loc._ingest_text(f"l_simp_chinese:\n dynn_liang205: \"{house_name}\"\n")
+    g = GameDefLoader(None)
+    g._maps = {"house": {"11527": "dynn_liang205"}}
+    raw = {
+        "schema_version": 1,
+        "reader_version": "0.1.0",
+        "scan_ms": 1.0,
+        "warnings": [],
+        "kinds": {
+            "house": {
+                "source": "save:dynasties.dynasty_house",
+                "container_found": True,
+                "count": 1,
+                "unresolved_key_count": 0,
+                "entries": {"11527": {"key": "11527", "key_kind": "def"}},
+            },
+            "dynasty": {"source": "x", "container_found": True, "count": 0,
+                         "unresolved_key_count": 0, "entries": {}},
+        },
+    }
+    idx = EntityIndexBuilder(game_def=g, loc=loc).build(raw)
+    assert idx.kinds[EntityKind.HOUSE].entries.get("11527") is not None
+    return ReferenceResolver(idx)
+
+
+def test_spouse_name_includes_resolved_surname():
+    """2C.2：配偶姓（house）解析成功且与名不同 → 「梁章」式拼接。"""
+    stub = _stub()
+    stub["spouses"] = ["43381"]
+    by_id = {
+        "43381": {"id": "43381", "name": "Hua_83EF", "dynasty": "11527"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    sp = p.spouses[0]
+    assert sp.name == "梁华"
+    assert sp.characterId == "43381"
+
+
+def test_child_ref_gets_surname_and_dynasty_field():
+    """2C.2：子女引用拼接姓，并把解析后的 dynasty EntityRef 落位。"""
+    stub = _stub()
+    stub["children"] = ["44864"]
+    by_id = {
+        "44864": {"id": "44864", "name": "Hua_83EF", "dynasty": "11527"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    child = p.children[0]
+    assert child.name == "梁华"
+    assert child.dynasty is not None
+    assert child.dynasty.name == "梁"
+    assert child.dynasty.resolved is True
+    assert child.resolved is True
+
+
+def test_ref_without_dynasty_keeps_given_name():
+    """2C.2：存档里配偶确无 dynasty（如真实存档 43381 章庄）→ 不拼接也不伪造。"""
+    stub = _stub()
+    stub["spouses"] = ["43381"]
+    by_id = {
+        "43381": {"id": "43381", "name": "Hua_83EF"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    assert p.spouses[0].name == "华"
+
+
+def test_surname_not_appended_when_given_name_unresolved():
+    """2C.2：名本身未解析（resolved=False）→ 不拼姓，避免「梁20423」半截姓名。"""
+    stub = _stub()
+    stub["children"] = ["44864"]
+    by_id = {
+        "44864": {"id": "44864", "dynasty": "11527"},  # 无 name 键 → unresolved
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    child = p.children[0]
+    assert child.name == "44864"
+    assert child.resolved is False
+
+
+def test_surname_not_appended_when_same_as_given_name():
+    """2C.2：姓与名相同（以本人命名的王朝）→ 不重复拼接。"""
+    stub = _stub()
+    stub["children"] = ["44864"]
+    by_id = {
+        "44864": {"id": "44864", "name": "Hua_83EF", "dynasty": "11527"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id,
+                   resolver=_resolver_with_house(house_name="华"))
+    assert p.children[0].name == "华"
+
+
+def test_relationship_period_former_spouse_also_gets_surname():
+    stub = _stub()
+    stub["former_spouses"] = ["2001"]
+    by_id = {
+        "2001": {"id": "2001", "name": "Hua_83EF", "dynasty": "11527"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    sp = p.spouses[0]
+    assert sp.name == "梁华"
+    assert sp.isFormer is True
+
+
+def test_relatives_and_liege_get_surname():
+    """2C.2：父母与君主引用同样拼接已解析姓。"""
+    stub = _stub()
+    stub["father"] = "1001"
+    stub["liege"] = "9001"
+    stub["parent_source"] = "child_backref"
+    by_id = {
+        "1001": {"id": "1001", "name": "max_chinese_male_name_1001", "dynasty": "11527"},
+        "9001": {"id": "9001", "name": "Hua_83EF", "dynasty": "11527"},
+        "6432": {"id": "6432", "name": "Hua_83EF", "dynasty": "11527"},
+    }
+    p = to_profile(stub, _loader_with_names(), by_id=by_id, resolver=_resolver_with_house())
+    assert p.parents[0].name == "梁赵大"
+    assert p.liege.name == "梁华"

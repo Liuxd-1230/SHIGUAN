@@ -39,6 +39,14 @@ export function IdentitySection({ identity }: { identity?: CharacterIdentity }) 
         {identity.headlineIdentity}
       </p>
       <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        {identity.isHegemony && (
+          <span
+            className="rounded border border-cinnabar-700/50 bg-cinnabar-700/10 px-2 py-0.5 font-medium text-cinnabar-800"
+            title="该主头衔为霸权（h_* 超帝国）头衔，如唐（h_china）/ 罗马帝国（h_roman_empire）"
+          >
+            霸权
+          </span>
+        )}
         {realm && (
           <span className="rounded border border-gold-500/50 bg-gold-500/5 px-2 py-0.5 text-gold-800">
             {realm}
