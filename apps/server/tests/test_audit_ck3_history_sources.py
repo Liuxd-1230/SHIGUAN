@@ -229,14 +229,31 @@ def test_compare_title_history_kind_folding_detected():
 
 
 def test_classify_field_categories():
+    # 3C.7 P1 后：capital 等字段已由 reader 读取 → SAVE_PRESENT（不再 READER_DROPPED）。
     row = classify_field("capital", "landed_titles", 5)
     assert row["present_in_save"] is True
-    assert row["classification"] == "READER_DROPPED"
+    assert row["classification"] == "SAVE_PRESENT"
     row2 = classify_field("primary_title", "landed_titles", 0)
     assert row2["present_in_save"] is False
     assert row2["classification"] == "SAVE_ABSENT"
     row3 = classify_field("holder", "landed_titles", 3)
     assert row3["classification"] == "SAVE_PRESENT"
+
+
+def test_classify_field_p1_fields_now_read_by_reader():
+    # 3C.7 P1 新增字段：存档存在且 reader 已消费，不得再标 READER_DROPPED。
+    for field, scope in [
+        ("claims", "landed_titles"),
+        ("de_jure_liege", "landed_titles"),
+        ("de_jure_vassals", "landed_titles"),
+        ("history_government", "landed_titles"),
+        ("was_player", "character"),
+        ("domain", "character"),
+    ]:
+        row = classify_field(field, scope, 5)
+        assert row["present_in_save"] is True
+        assert row["reader_reads"] is True, field
+        assert row["classification"] not in ("READER_DROPPED", "UNKNOWN"), field
 
 
 if __name__ == "__main__":
