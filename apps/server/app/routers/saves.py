@@ -55,6 +55,7 @@ from app.config import (
     MAX_UPLOAD_BYTES,
     STAGING_ROOT,
     UPLOAD_CHUNK_BYTES,
+    WORKSPACE_ROOT,
     redact_path,
     resolve_default_saves_dir,
     resolve_game_dir,
@@ -78,8 +79,16 @@ from app.services.outline_store import outline_store
 from app.services.save_registry import SaveRegistry, SaveStillWritingError
 from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
-from app.services.title_reign_extractor import TitleProfileIndex, build_title_events
+from app.services.title_reign_extractor import (
+    TitleProfileIndex,
+    build_semantic_title_events,
+)
 from app.services.timeline_builder import merge_timeline
+from biography_engine.title_semantics import (
+    PrimaryIdentityResolver,
+    TitleSemanticRuleRegistry,
+    aggregate_entities,
+)
 
 # Phase 2A.1 验证版本（占位 token 表针对此版本反推；新版本出现给兼容性提示）。
 VALIDATED_VERSION = "1.19.0.6"
@@ -205,12 +214,30 @@ def _build_localization(save_id: str, signature: str, resolved_mods: list) -> Lo
     return loader
 
 
+_semantic_registry_cache: TitleSemanticRuleRegistry | None = None
+
+
+def _semantic_registry() -> TitleSemanticRuleRegistry:
+    """加载（或复用）头衔语义规则注册表（config/title-semantics/）。
+
+    分层：user-overrides.yml > mods/*.yml > generic.yml > base-game.yml > 启发式。
+    规则文件只读，改动需重启生效（与解析缓存同生命周期）。
+    """
+    global _semantic_registry_cache
+    if _semantic_registry_cache is None:
+        _semantic_registry_cache = TitleSemanticRuleRegistry(
+            WORKSPACE_ROOT / "config" / "title-semantics"
+        )
+    return _semantic_registry_cache
+
+
 def _title_index(sess, save_id: str) -> tuple[TitleProfileIndex, list[str]]:
     """构建（或复用）该存档的头衔索引：titles.json + 实体索引 + 本地化 → TitleProfileIndex。
 
     返回 (index, scanner_warnings)。一次反解后按 (save_id, signature) 缓存；
     单人物查询与列表页共享，绝不重复扫描 titles.json，也不重新 melt。
     头衔名解析只依赖 title 实体（loc 键），无需 GameDefLoader，避免每次扫描游戏定义。
+    3C：索引内建头衔语义分类（TitleSemanticClassifier），Mod 规则按存档 mod 标识激活。
     """
     key = (save_id, sess.signature)
     cached = _title_index_cache.get(key)
@@ -223,7 +250,13 @@ def _title_index(sess, save_id: str) -> tuple[TitleProfileIndex, list[str]]:
     report = _mod_resolver().resolve(descriptors, game_version)
     loader = _build_localization(save_id, sess.signature, report.required)
     reference = _entity_resolver(sess, save_id, loader)
-    index = TitleProfileIndex(raw, loc=loader, resolver=reference)
+    index = TitleProfileIndex(
+        raw,
+        loc=loader,
+        resolver=reference,
+        semantic_registry=_semantic_registry(),
+        active_mod_ids=descriptors,
+    )
     scanner_warnings = list(raw.get("warnings") or [])
     _title_index_cache[key] = (index, scanner_warnings)
     return index, scanner_warnings
@@ -408,9 +441,12 @@ def _ensure_loader(sess, save_id: str) -> LocalizationLoader:
 
 
 def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
-    """组装单人物档案的 M3 头衔位 + M4 记忆位（供 profile / timeline 端点共用）。
+    """组装单人物档案的 M3 头衔位 + M4 记忆位 + 3C 语义位（供 profile 端点共用）。
 
-    返回 (loader, title_periods, title_events, title_warnings, memory_index, resolver)。
+    返回 (loader, title_periods, title_events, title_warnings, memory_index, resolver,
+           semantic_bits)；
+    semantic_bits = dict(title_classifications, raw_entries, identity,
+                         historical_events, aggregates(offices/territories/claims))。
     索引与 loader 均按 (save_id, signature) 缓存复用，不重复扫描、不重新 melt。
     """
     loader = _ensure_loader(sess, save_id)
@@ -422,6 +458,7 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
     title_periods: list = []
     title_events: list = []
     title_warnings: list = []
+    semantic_bits = {}
     try:
         title_index, _ = _title_index(sess, save_id)
     except (ReaderExecutionError, ReaderMissingError):
@@ -433,26 +470,45 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
         # 与 to_profile 的姓名解析一致（本地化 → 拼音hex 解码 → 原 key），
         # 避免拼音hex 名未命中本地化时 loader.resolve 返回 None，污染头衔描述。
         display_name = resolve_display_name(name_key, loader) if name_key else name_key
-        primary_period = None
-        if bits.primary is not None:
-            primary_period = next(
-                (
-                    p
-                    for p in title_periods
-                    if p.isCurrent and p.titleId == bits.primary.id
-                ),
-                None,
-            )
-        title_events = build_title_events(
-            character_id, display_name, title_periods, primary_period
+        classifications = title_index.classifications()
+        raw_entries = title_index.raw_entries()
+        # 3C.2：主要身份（headline / realmStatus / primaryRealmTitle）。
+        identity = PrimaryIdentityResolver(classifications).resolve(title_periods)
+        # 3C.3：按语义类型拆分的历史语义事件 + 时间线事件（不推断因果）。
+        historical_events, title_events = build_semantic_title_events(
+            character_id, display_name, title_periods, classifications, raw_entries
         )
+        # 3C.2：现任官职/机构/宗教/荣誉/宣称/领地聚合。
+        aggregates = aggregate_entities(title_periods, classifications)
+        semantic_bits = {
+            "title_classifications": classifications,
+            "raw_entries": raw_entries,
+            "identity": identity,
+            "historical_events": historical_events,
+            # aggregate_entities 返回 camelCase；to_profile 参数为 snake_case，此处归一。
+            "major_territories": aggregates["majorTerritories"],
+            "subordinate_territories": aggregates["subordinateTerritories"],
+            "personal_offices": aggregates["personalOffices"],
+            "realm_institutions": aggregates["realmInstitutions"],
+            "religious_offices": aggregates["religiousOffices"],
+            "honors": aggregates["honors"],
+            "claims": aggregates["claims"],
+        }
         title_warnings = title_index.warnings(character_id)
     memory_index = None
     try:
         memory_index, _ = _memory_index(sess, save_id)
     except (ReaderExecutionError, ReaderMissingError):
         memory_index = None
-    return loader, title_periods, title_events, title_warnings, memory_index, resolver
+    return (
+        loader,
+        title_periods,
+        title_events,
+        title_warnings,
+        memory_index,
+        resolver,
+        semantic_bits,
+    )
 
 
 def _ensure_session(save_id: str):
@@ -1038,9 +1094,17 @@ def character_profile_endpoint(save_id: str, character_id: str):
         raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
-    loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
-        sess, save_id, character_id, stub
-    )
+    (
+        loader,
+        title_periods,
+        title_events,
+        title_warnings,
+        memory_index,
+        resolver,
+        semantic_bits,
+    ) = _profile_parts(sess, save_id, character_id, stub)
+    # raw_entries 仅供语义构建内部使用，不进入档案契约。
+    semantic_kwargs = {k: v for k, v in semantic_bits.items() if k != "raw_entries"}
     return to_profile(
         stub,
         loader,
@@ -1050,6 +1114,7 @@ def character_profile_endpoint(save_id: str, character_id: str):
         by_id=sess.by_id,
         memory_index=memory_index,
         resolver=resolver,
+        **semantic_kwargs,
     ).model_dump()
 
 
@@ -1068,9 +1133,15 @@ def character_timeline_endpoint(save_id: str, character_id: str):
         raise _fail(404, "character_not_found", f"缓存中未找到人物 id={character_id}")
     except (ReaderExecutionError, ReaderMissingError) as exc:
         raise _fail(500, "reader_error", str(exc)) from exc
-    loader, _title_periods, title_events, _title_warnings, memory_index, _resolver = _profile_parts(
-        sess, save_id, character_id, stub
-    )
+    (
+        loader,
+        _title_periods,
+        title_events,
+        _title_warnings,
+        memory_index,
+        _resolver,
+        _semantic_bits,
+    ) = _profile_parts(sess, save_id, character_id, stub)
     name_key = stub.get("name") or ""
     display_name = loader.resolve(name_key) if (loader and name_key) else name_key
     base_events, _base_warnings = _build_timeline_and_evidence(stub, display_name or name_key)
@@ -1163,7 +1234,7 @@ def generate_outline_endpoint(save_id: str, character_id: str, req: OutlineReque
     except ValueError:
         raise _fail(400, "invalid_style", f"非法 BiographyStyle：{req.style}")
 
-    loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
+    loader, title_periods, title_events, title_warnings, memory_index, resolver, _semantic_bits = _profile_parts(
         sess, save_id, character_id, stub
     )
     profile = to_profile(
@@ -1302,7 +1373,7 @@ def _build_biography_worker(
     def _worker(job) -> dict:
         # 档案加载（与提纲生成同路径：一次 melt 多次查询，不重新解析）。
         stub = _session_manager.get_character(session, character_id)
-        loader, title_periods, title_events, title_warnings, memory_index, resolver = _profile_parts(
+        loader, title_periods, title_events, title_warnings, memory_index, resolver, _semantic_bits = _profile_parts(
             session, save_id, character_id, stub
         )
         profile = to_profile(

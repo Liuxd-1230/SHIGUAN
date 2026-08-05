@@ -338,12 +338,15 @@ def test_index_ruler_ids_only_current_holders():
     assert idx.ruler_ids() == {"1"}  # 2/3 仅是历史 holder，不是现任。
 
 
-def test_build_title_events_gain_loss_succession_with_evidence():
-    """头衔事件：每段有起止日 → title_gain/title_loss；现任主头衔起点 → succession(inferred)。
-    每条事件都带 EvidenceRef，sourcePath 均为 landed_titles/...（无本地绝对路径）。"""
+def test_build_semantic_title_events_gain_loss_with_evidence():
+    """3C.3：每段有起止日 → 按语义类型拆分为 gain/loss；每条带 EvidenceRef。
+
+    d_alpha 公国（封臣结构未知，liege 为空 → 独立）→ identity_transition；
+    c_beta 伯国 → territorial_gain/loss。无「继承」事件（不再把 holder 变更
+    解释为继承）；sourcePath 均为 landed_titles/...（无本地绝对路径）。"""
     from app.services.title_reign_extractor import (
         TitleProfileIndex,
-        build_title_events,
+        build_semantic_title_events,
     )
 
     raw = {
@@ -354,6 +357,7 @@ def test_build_title_events_gain_loss_succession_with_evidence():
                 "name_source": "save",
                 "tier": "duchy",
                 "holder_id": "1",
+                "de_facto_liege_id": None,
                 "history": [
                     {"date": "760.1.1", "holder_id": "9", "kind": "holder"},
                     {"date": "780.5.10", "holder_id": "1", "kind": "holder"},
@@ -365,6 +369,7 @@ def test_build_title_events_gain_loss_succession_with_evidence():
                 "name_source": "save",
                 "tier": "county",
                 "holder_id": None,
+                "de_facto_liege_id": "k_king",
                 "history": [
                     {"date": "770.2.2", "holder_id": "1", "kind": "holder"},
                     {"date": "790.3.3", "holder_id": "3", "kind": "holder"},
@@ -374,34 +379,30 @@ def test_build_title_events_gain_loss_succession_with_evidence():
         "warnings": [],
     }
     idx = TitleProfileIndex(raw)
-    periods = idx.periods("1")
-    bits = idx.primary_bits("1")
-    primary_period = next(
-        (p for p in periods if p.isCurrent and p.titleId == bits.primary.id), None
+    sem_events, events = build_semantic_title_events(
+        "1", "阿尔法", idx.periods("1"), idx.classifications(), idx.raw_entries()
     )
-    events = build_title_events("1", "阿尔法", periods, primary_period)
 
     types = {e.type.value for e in events}
-    assert "title_gain" in types and "title_loss" in types and "succession" in types
-    gain = [e for e in events if e.type.value == "title_gain"]
-    assert len(gain) == 2  # d_alpha@780.5.10 + c_beta@770.2.2
+    assert "title_gain" in types and "title_loss" in types
+    # 不再伪造 succession（holder 变更 ≠ 继承）。
+    assert "succession" not in types
     for e in events:
         assert e.evidence, f"事件 {e.id} 缺 EvidenceRef"
         for ev in e.evidence:
             assert ev.sourcePath.startswith("landed_titles/")
             assert ":" not in ev.sourcePath and "\\" not in ev.sourcePath  # 无本地路径
-    succ = [e for e in events if e.type.value == "succession"]
-    assert len(succ) == 1
-    assert succ[0].confidence.value == "inferred"
-    assert succ[0].date == "780.5.10"
-    assert succ[0].relatedTitles[0].id == "d_alpha"
+    # 语义事件：公国（独立）→ identity_transition；伯国（封臣）→ territorial_gain/loss。
+    sem_types = {s.semanticType.value for s in sem_events}
+    assert "identity_transition" in sem_types
+    assert "territorial_gain" in sem_types and "territorial_loss" in sem_types
 
 
-def test_build_title_events_no_fabricated_dates():
+def test_build_semantic_title_events_no_fabricated_dates():
     """现任但无 history 段（start=None）→ 不生成无日期的事件（不伪造日期）。"""
     from app.services.title_reign_extractor import (
         TitleProfileIndex,
-        build_title_events,
+        build_semantic_title_events,
     )
 
     raw = {
@@ -412,6 +413,7 @@ def test_build_title_events_no_fabricated_dates():
                 "name_source": "save",
                 "tier": "duchy",
                 "holder_id": "4",
+                "de_facto_liege_id": None,
                 "history": [],
             }
         ],
@@ -419,13 +421,11 @@ def test_build_title_events_no_fabricated_dates():
     }
     idx = TitleProfileIndex(raw)
     periods = idx.periods("4")
-    bits = idx.primary_bits("4")
     assert periods and periods[0].start is None and periods[0].isCurrent
-    primary_period = next(
-        (p for p in periods if p.isCurrent and p.titleId == bits.primary.id), None
+    sem_events, events = build_semantic_title_events(
+        "4", "某君", periods, idx.classifications(), idx.raw_entries()
     )
-    events = build_title_events("4", "某君", periods, primary_period)
-    assert events == []  # 无日期 → 诚实不造事件
+    assert events == [] and sem_events == []  # 无日期 → 诚实不造事件
 
 
 def test_index_periods_equal_extractor_extract():
@@ -475,14 +475,17 @@ def test_index_two_saves_same_character_id_isolated():
     assert [p.titleId for p in idx_b.periods("1")] == ["d_b"]
 
 
-def test_build_title_events_aggregates_same_day_multi_title_gain():
-    """M3 收口（2C.1）：同一天获得多个头衔 → 聚合为一条事件。
+def test_build_semantic_title_events_same_day_split_by_semantic_type():
+    """3C.3：同一天多个头衔 → 按语义类型拆分（不再一条刷屏）。
 
-    一次战争/继承往往同日获多地；逐条刷屏会淹没叙事。聚合事件保留
-    全部 relatedTitles 与 evidence，但不写战争原因（无关联字段），
+    三个领地同日获得 → 同语义（territorial_gain）合并为一条「获得领地」；
+    若混有官职/机构则拆成多条。不写战争原因（无关联字段），
     也不设 mergedCount（那是"重复记录去重"语义）。
     """
-    from app.services.title_reign_extractor import TitleProfileIndex, build_title_events
+    from app.services.title_reign_extractor import (
+        TitleProfileIndex,
+        build_semantic_title_events,
+    )
 
     raw = {
         "titles": [
@@ -492,6 +495,7 @@ def test_build_title_events_aggregates_same_day_multi_title_gain():
                 "name_source": "save",
                 "tier": "county",
                 "holder_id": "1",
+                "de_facto_liege_id": "k_king",
                 "history": [
                     {"date": "950.8.16", "holder_id": "9", "kind": "holder"},
                     {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
@@ -503,6 +507,7 @@ def test_build_title_events_aggregates_same_day_multi_title_gain():
                 "name_source": "save",
                 "tier": "county",
                 "holder_id": "1",
+                "de_facto_liege_id": "k_king",
                 "history": [
                     {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
                 ],
@@ -513,6 +518,18 @@ def test_build_title_events_aggregates_same_day_multi_title_gain():
                 "name_source": "save",
                 "tier": "duchy",
                 "holder_id": "1",
+                "de_facto_liege_id": "k_king",
+                "history": [
+                    {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
+                ],
+            },
+            {
+                "key": "e_minister_shizheng",
+                "name": "政事堂",
+                "name_source": "save",
+                "tier": None,
+                "holder_id": "1",
+                "de_facto_liege_id": None,
                 "history": [
                     {"date": "952.8.16", "holder_id": "1", "kind": "holder"},
                 ],
@@ -521,16 +538,25 @@ def test_build_title_events_aggregates_same_day_multi_title_gain():
         "warnings": [],
     }
     idx = TitleProfileIndex(raw)
-    events = build_title_events("1", "梁克贞", idx.periods("1"), None)
+    sem_events, events = build_semantic_title_events(
+        "1", "梁克贞", idx.periods("1"), idx.classifications(), idx.raw_entries()
+    )
 
     gain = [e for e in events if e.type.value == "title_gain"]
-    # 三个头衔同日获得 → 聚合为一条
-    assert len(gain) == 1
-    e = gain[0]
-    assert e.date == "952.8.16"
-    assert e.id == "1-title-gain-952.8.16"
-    assert e.mergedCount is None  # 不污染"重复记录去重"语义
-    assert [t.id for t in e.relatedTitles] == ["c_jia", "c_yi", "d_bing"]
-    assert "甲伯爵领" in e.description and "乙伯爵领" in e.description and "丙公爵领" in e.description
-    assert "战争" not in e.description  # 不编造战争原因
-    assert len(e.evidence) == 3  # 组内全部证据可追溯
+    # 领地（3 条同语义）合并为 1 条；机构（政事堂）独立 1 条 → 共 2 条 gain。
+    assert len(gain) == 2, [e.title for e in gain]
+    territorial = [e for e in gain if e.title == "获得领地"]
+    institution = [e for e in gain if e.title == "机构任职"]
+    assert len(territorial) == 1
+    assert len(institution) == 1
+    assert territorial[0].date == "952.8.16"
+    assert territorial[0].id == "1-territorial_gain-952.8.16"
+    assert territorial[0].mergedCount is None  # 不污染"重复记录去重"语义
+    assert [t.id for t in territorial[0].relatedTitles] == ["c_jia", "c_yi", "d_bing"]
+    assert "甲伯爵领" in territorial[0].description
+    assert "政事堂" in institution[0].description
+    # 语义事件同样拆分。
+    sem_types = {s.semanticType.value for s in sem_events}
+    assert "territorial_gain" in sem_types and "institution_transition" in sem_types
+    assert "战争" not in territorial[0].description  # 不编造战争原因
+    assert len(territorial[0].evidence) == 3  # 组内全部证据可追溯

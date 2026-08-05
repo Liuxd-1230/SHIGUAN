@@ -45,6 +45,14 @@ from models import (
 from app.services.entity_index_builder import ReferenceResolver
 from app.services.localization import LocalizationLoader
 
+from biography_engine.historical_events import HistoricalEventSemanticBuilder
+from biography_engine.title_semantics import (
+    TitleClassification,
+    TitleDisplayResolver,
+    TitleSemanticClassifier,
+    TitleSemanticRuleRegistry,
+)
+
 TIER_MAP = {
     "barony": TitleTier.BARONY,
     "county": TitleTier.COUNTY,
@@ -214,118 +222,28 @@ class TitleSummaryBits:
     warningCount: int = 0
 
 
-def build_title_events(
+def build_semantic_title_events(
     character_id: str,
     character_name: str,
     periods: list[TitlePeriod],
-    primary_period: Optional[TitlePeriod],
-) -> list[TimelineEvent]:
-    """由头衔任期生成 title_gain / title_loss / succession 时间线事件（M3）。
+    classifications: dict[str, TitleClassification],
+    raw_entries: dict[str, dict],
+) -> tuple[list, list[TimelineEvent]]:
+    """3C.3：把任期聚合为「按语义类型拆分」的历史语义事件 + 时间线事件。
 
-    规则（诚实性）：
-      - 每段任期：起点（已知）→ title_gain；终点（已知）→ title_loss。
-      - succession 仅当“当前唯一主头衔”的任期起点明确记录时生成一次，且标 inferred：
-        存档只记录“某日期 holder 变更”，把这次变更解释为“继承”是我们的语义推断。
-      - 无日期的任期绝不伪造日期事件。
-      每条事件至少带一条指向 landed_titles 的 EvidenceRef。
+    取代旧版 build_title_events：
+      - 同一天获得主权王国 + 官职 + 机构 → 拆分为 identity_transition /
+        institution_transition 等多条（不再把一次征服/继承的所有头衔混成一条）；
+      - 领地获得原因除 kind=created 直接证实为「创建」外一律 UNKNOWN，
+        并带「不得推断因果」叙事约束（时间相近绝不推断继承/征服/册封）；
+      - 历史语义事件与时间线事件同源产出（同一批变更，两种视图）。
+    返回 (historical_semantic_events, timeline_events)，与
+    HistoricalEventSemanticBuilder.build 的返回顺序一致。
     """
-    cid = str(character_id)
-    events: list[TimelineEvent] = []
-
-    def _gain_loss_evidence(
-        period: TitlePeriod, date: str, raw_key: str, desc: str
-    ) -> EvidenceRef:
-        return EvidenceRef(
-            id=f"{cid}-{period.titleId}-{date}-ev",
-            sourceType="title",
-            sourcePath=f"{period.sourcePath}/history/{date}",
-            rawKey=raw_key,
-            description=desc,
-            confidence=Confidence.CONFIRMED,
-        )
-
-    # M3 收尾（2C.1）：同一日期的多头衔获得/失去聚合为一条事件。
-    # 一次战争/继承往往同日获得多个头衔，逐条刷屏会淹没叙事；聚合后
-    # relatedTitles 保留全部头衔、evidence 聚合组内全部记录（可追溯）。
-    # 不写战争原因（存档无 war→title 关联字段），也不设 mergedCount
-    # （该字段语义是"重复记录去重"，多头衔是不同事实，不污染）。
-    gains: dict[str, list[TitlePeriod]] = {}
-    losses: dict[str, list[TitlePeriod]] = {}
-    for p in periods:
-        if p.start:
-            gains.setdefault(p.start, []).append(p)
-        if p.end:
-            losses.setdefault(p.end, []).append(p)
-
-    def _titles_event(
-        date: str,
-        etype: EventType,
-        label: str,
-        group: list[TitlePeriod],
-        verb_desc: str,
-        start: bool,
-    ) -> TimelineEvent:
-        title_refs = [_title_ref(p) for p in group]
-        names = "、".join(p.name for p in group)
-        evidence = [
-            _gain_loss_evidence(
-                p,
-                date,
-                f"history.{date}.holder",
-                "landed_titles 历史记录中的持有者变更"
-                + ("（该日起持有此头衔）" if start else "（该日止不再持有此头衔）"),
-            )
-            for p in group
-        ]
-        return TimelineEvent(
-            id=f"{cid}-{('title-gain' if start else 'title-loss')}-{date}",
-            type=etype,
-            date=date,
-            title=label,
-            description=f"{character_name} 于 {date} {verb_desc}：{names}。",
-            relatedTitles=title_refs,
-            sourcePath=f"{group[0].sourcePath}/history/{date}",
-            confidence=Confidence.CONFIRMED,
-            evidence=evidence,
-        )
-
-    for date, group in gains.items():
-        events.append(
-            _titles_event(date, EventType.TITLE_GAIN, "获得头衔", group, "成为以下头衔的持有者", True)
-        )
-    for date, group in losses.items():
-        events.append(
-            _titles_event(date, EventType.TITLE_LOSS, "失去头衔", group, "不再是以下头衔的持有者", False)
-        )
-
-    # 继位：仅当前主头衔的明确任期起点（历史记录的直接 holder 变更，非推断 primary）。
-    if primary_period is not None and primary_period.isCurrent and primary_period.start:
-        title_ref = _title_ref(primary_period)
-        events.append(
-            TimelineEvent(
-                id=f"{cid}-succession-{primary_period.titleId}-{primary_period.start}",
-                type=EventType.SUCCESSION,
-                date=primary_period.start,
-                title="继承",
-                description=(
-                    f"存档记录 {character_name} 于 {primary_period.start} "
-                    f"成为「{primary_period.name}」的现任持有者。"
-                ),
-                relatedTitles=[title_ref],
-                sourcePath=f"{primary_period.sourcePath}/history/{primary_period.start}",
-                confidence=Confidence.INFERRED,  # “继承”属语义解释，非存档直述
-                evidence=[
-                    _gain_loss_evidence(
-                        primary_period,
-                        primary_period.start,
-                        f"history.{primary_period.start}.holder",
-                        "landed_titles 历史记录中的持有者变更（当前主头衔的任期起点）",
-                    )
-                ],
-            )
-        )
-    events.sort(key=lambda e: (_date_key(e.date), e.type.value))
-    return events
+    builder = HistoricalEventSemanticBuilder(
+        character_id, character_name, classifications, raw_entries
+    )
+    return builder.build(periods)
 
 
 class TitleProfileIndex:
@@ -341,21 +259,40 @@ class TitleProfileIndex:
         raw_titles: dict,
         loc: Optional[LocalizationLoader] = None,
         resolver: Optional[ReferenceResolver] = None,
+        semantic_registry: Optional[TitleSemanticRuleRegistry] = None,
+        active_mod_ids: Optional[list[str]] = None,
     ) -> None:
         self._extractor = TitleReignExtractor(loc=loc, resolver=resolver)
+        # 3C.2：头衔语义分类（titleId -> TitleClassification），一次反解全存档缓存。
+        self._classifications: dict[str, TitleClassification] = {}
+        # 3C.3：原始 titles.json 条目（titleId -> entry，供因果解析与展示名）。
+        self._raw_entries: dict[str, dict] = {}
+        self._active_mod_files: list[dict] = []
         # character_id -> 全部任期（现任 + 过往）。
         self._periods: dict[str, list[TitlePeriod]] = {}
         # character_id -> 头衔相关证据告警（冲突 / 多同级推断）。
         self._warnings: dict[str, list[EvidenceWarning]] = {}
         # character_id -> 摘要位（惰性计算后缓存）。
         self._bits: dict[str, TitleSummaryBits] = {}
-        self._build(raw_titles)
+        self._build(raw_titles, loc=loc, semantic_registry=semantic_registry, active_mod_ids=active_mod_ids)
 
-    def _add_warning(self, cid: str, w: EvidenceWarning) -> None:
-        self._warnings.setdefault(cid, []).append(w)
-
-    def _build(self, raw_titles: dict) -> None:
-        for entry in raw_titles.get("titles") or []:
+    def _build(
+        self,
+        raw_titles: dict,
+        loc: Optional[LocalizationLoader] = None,
+        semantic_registry: Optional[TitleSemanticRuleRegistry] = None,
+        active_mod_ids: Optional[list[str]] = None,
+    ) -> None:
+        classifier = TitleSemanticClassifier(
+            semantic_registry or TitleSemanticRuleRegistry(),
+            TitleDisplayResolver(loc=loc),
+        )
+        entries = [e for e in raw_titles.get("titles") or [] if e.get("key")]
+        self._classifications, self._active_mod_files = classifier.classify_all(
+            entries, active_mod_ids=active_mod_ids
+        )
+        self._raw_entries = {str(e.get("key")): e for e in entries}
+        for entry in entries:
             key = entry.get("key") or ""
             if not key:
                 continue
@@ -382,6 +319,20 @@ class TitleProfileIndex:
                     )
         for ps in self._periods.values():
             ps.sort(key=lambda p: (_date_key(p.start), p.titleId))
+
+    def _add_warning(self, cid: str, w: EvidenceWarning) -> None:
+        self._warnings.setdefault(cid, []).append(w)
+
+    # ---- 3C：语义分类访问器 ------------------------------------------------
+    def classifications(self) -> dict[str, TitleClassification]:
+        """全存档头衔语义分类（titleId -> TitleClassification）。"""
+        return self._classifications
+    def raw_entries(self) -> dict[str, dict]:
+        """原始 titles.json 条目（titleId -> entry，供因果/展示名解析）。"""
+        return self._raw_entries
+
+    def active_mod_files(self) -> list[dict]:
+        return self._active_mod_files
 
     def periods(self, character_id: str) -> list[TitlePeriod]:
         return list(self._periods.get(str(character_id)) or [])

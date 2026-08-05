@@ -593,13 +593,27 @@ def test_profile_includes_titles_and_title_events(client, tmp_path):
     assert alpha["start"] == "780.5.10"
     assert alpha["end"] is None
     assert alpha["sourcePath"] == "landed_titles/d_alpha"
-    # 现任主头衔任期起点 → succession（inferred）事件
+    # 头衔变更时间线事件（3C.3：按语义类型拆分；holder 变更 ≠ 继承，
+    # 不再伪造 succession）
     kinds = {e["type"] for e in p["timeline"]}
     assert "title_gain" in kinds
-    assert "succession" in kinds
+    assert "succession" not in kinds
     for e in p["timeline"]:
         if e["type"].startswith("title_"):
             assert e["evidence"], f"事件 {e['id']} 缺 EvidenceRef"
+    # 3C.2：档案带主要身份 + 3C.3：历史语义事件（不推断因果）。
+    identity = p["identity"]
+    assert identity["headlineIdentity"]
+    assert identity["realmStatus"] in (
+        "independent_ruler", "vassal_ruler", "landless_official",
+        "religious_leader", "regent", "adventurer", "courtier",
+        "former_ruler", "prisoner", "unknown",
+    )
+    assert p["historicalEvents"], "profile 应含按语义类型拆分的历史语义事件"
+    for ev in p["historicalEvents"]:
+        assert ev["acquisitionCause"] in (None, "creation", "unknown")
+        if ev["acquisitionCause"] == "unknown":
+            assert ev["narrativeConstraints"]  # 带"不得推断因果"约束
 
 
 def test_titles_endpoint_returns_periods(client, tmp_path):

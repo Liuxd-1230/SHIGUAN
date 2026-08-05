@@ -633,6 +633,17 @@ def to_profile(
     by_id: Optional[dict] = None,
     memory_index=None,
     resolver: Optional[ReferenceResolver] = None,
+    # ---- 3C：历史语义层（由 saves.py _profile_parts 确定性产出）----
+    title_classifications: Optional[dict] = None,
+    identity=None,
+    historical_events: Optional[list] = None,
+    major_territories: Optional[list] = None,
+    subordinate_territories: Optional[list] = None,
+    personal_offices: Optional[list] = None,
+    realm_institutions: Optional[list] = None,
+    religious_offices: Optional[list] = None,
+    honors: Optional[list] = None,
+    claims: Optional[list] = None,
 ) -> CharacterProfile:
     """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。
 
@@ -810,6 +821,17 @@ def to_profile(
         imprisonments=[],
         travels=[],
         memories=memories,
+        # 3C：历史语义层（由确定性规则产出，不涉及 LLM）。
+        titleClassifications=title_classifications or {},
+        identity=identity,
+        personalOffices=personal_offices or [],
+        realmInstitutions=realm_institutions or [],
+        religiousOffices=religious_offices or [],
+        honors=honors or [],
+        claims=claims or [],
+        majorTerritories=major_territories or [],
+        subordinateTerritories=subordinate_territories or [],
+        historicalEvents=historical_events or [],
         timeline=timeline,
         evidenceWarnings=warnings,
     )

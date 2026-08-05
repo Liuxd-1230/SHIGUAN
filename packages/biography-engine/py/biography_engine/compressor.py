@@ -16,7 +16,7 @@ from typing import Optional
 from models import CharacterProfile, Confidence, TimelineEvent
 
 from app.services.llm_input_filter import sanitize_character_ref_for_llm
-from app.services.title_reign_extractor import _date_key
+from .title_semantics import _date_key  # 3C.3：解耦，避免 biography_engine ↔ app 循环导入（完整 v3 见 3C.4）
 
 from .importance import highest_title_tier_value, is_mandatory_keep, score_event
 from .models import COMPRESSION_VERSION, CompressedEvent, CompressedProfile, CompressedRelative
