@@ -449,7 +449,7 @@ export default function BiographyPage() {
       <div className="mt-6">
         <EntityListSection
           title="政权机构"
-          hint="存档可证的机构任职（如政事堂/枢密院），按存档记录如实列出。"
+          hint="存档可证的政权机构归属（如政事堂/枢密院），按存档记录如实列出。"
           items={profile.realmInstitutions}
         />
       </div>

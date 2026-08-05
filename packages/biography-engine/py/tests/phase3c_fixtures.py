@@ -154,10 +154,11 @@ CASES = [
         "titles": [_entry("e_minister_shizheng", "政事堂", tier=None, liege=None)],
         "expect": {
             "realmStatus": "landless_official",
-            "headlineIdentity": "政事堂任职",
+            # 3C.7：政权机构不表示个人任职 —— 只如实标注「（政权机构）」。
+            "headlineIdentity": "政事堂（政权机构）",
             "primaryOfficeId": "e_minister_shizheng",
             "realmInstitutions": ["政事堂"],
-            "forbiddenInterpretations": ["帝国", "国王"],
+            "forbiddenInterpretations": ["帝国", "国王", "政事堂任职"],
         },
     },
     {

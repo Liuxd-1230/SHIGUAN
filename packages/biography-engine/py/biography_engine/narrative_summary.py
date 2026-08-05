@@ -39,7 +39,7 @@ _SEMANTIC_LABELS = {
     "territorial_loss": "失去领地",
     "office_appointment": "就任官职",
     "office_dismissal": "卸任官职",
-    "institution_transition": "机构任职变化",
+    "institution_transition": "机构归属变化",  # 3C.7：政权机构归属/控制关系变化，不表示个人任职
     "religious_appointment": "出任宗教职务",
     "religious_dismissal": "卸任宗教职务",
     "claim_gained": "获得宣称",

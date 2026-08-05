@@ -1,10 +1,10 @@
-"""确定性事实校验器（Phase 3B 第 8 步 + 3C.5）—— 24 条规则。
+"""确定性事实校验器（Phase 3B 第 8 步 + 3C.5 + 3C.7）—— 30 条规则。
 
 全部确定性（同输入同输出），**不调用 LLM**。对正文逐章校验，产出
 `FactCheckResult`（status + issues）。WARNING/ERROR 级问题 → needs_revision；
 仅 INFO 级问题不强制重写。
 
-规则清单（24 条）：
+规则清单（30 条）：
   1  event_id_not_allowed     章节引用了不在该章允许列表的事件（每章只用该章事件）
   2  event_after_death        引用事件日期晚于人物死亡日期
   3  time_reversal            正文日期与本章事件日期明显冲突（早/晚太多）
@@ -25,11 +25,18 @@
   18 model_meta_leak          正文含 JSON/schema/eventIds/prompt 等模型元信息
   19 empty_chapter            章节正文为空
   20 markdown_leak            正文含 markdown 围栏/URL
-  # ---- 3C.5 新增 ----
+  # ---- 3C.5 ----
   21 fact_ref_invalid         本章 factIds 为空或指向档案外的事实
   22 cause_inference          存档未记录获得途径却写成继承/征服/册封（违反叙事约束）
   23 peerage_mismatch         非独立最高统治者却写成「国王/皇帝/公爵」等爵位
   24 event_fact_grounding     事件未被任何事实锚定（事件→事实不可追溯）
+  # ---- 3C.7（历史动作语义）----
+  25 mixed_cause_group        同一句把不同获得原因的多地写成同一种原因
+  26 institution_as_personal_office  政权机构被写成「任职/兼任/担任」个人官职
+  27 unsupported_succession_wording  appointment_succession 被写成世袭/继承父位
+  28 conquest_overreach       conquest 证据被补写具体战争名/对手/宣战理由/战役过程
+  29 lease_as_permanent_grant leased_out 被写成永久授封
+  30 realm_status_action_mismatch  swear_fealty/independency 被写成普通领土获得
 """
 from __future__ import annotations
 
@@ -37,6 +44,7 @@ import re
 from typing import List, Optional, Set
 
 from models import (
+    AcquisitionCause,
     Biography,
     BiographyChapter,
     BiographyOutline,
@@ -101,6 +109,44 @@ _PEERAGE_AS_IDENTITY_RE = re.compile(
     r"(?:成为|自立为|即位为|加冕为|登基为|受封为)(?:.{0,6}?)(?:国王|皇帝|公爵|伯爵|男爵)"
 )
 
+# ---- 3C.7 新增规则的正则 ----
+# 规则 26：政权机构写成个人任职（机构名 + 官职动词 / 任职动词 + 机构名）。
+_INSTITUTION_OFFICE_PREFIX_RE = re.compile(
+    r"(?:进入|就任|兼任|担任|出任|入职|执掌|领衔|入主|入阁)"
+)
+_INSTITUTION_OFFICE_SUFFIX_RE = re.compile(r"(?:任职|入职|就职|兼掌|领掌)")
+# 规则 27：把 administrative_succession 写成世袭继承（无家族/继承证据时 → 报错）。
+_SUCCESSION_WRITING_RE = re.compile(
+    r"世袭|继承父位|承袭家业|承袭|世继|袭封"
+)
+# 规则 28：conquest 证据被补写具体战争/对手/宣战理由/战役过程。
+_CONQUEST_OVERREACH_RE = re.compile(
+    r"(?:击败|战胜|打败|击溃|大破)\s*[^，。；]{0,12}"
+    r"|(?:对|向)[^，。；]{0,10}(?:宣战|开战)"
+    r"|在[^，。；]{0,14}(?:之战|战役|战争中|战场上)"
+    r"|(?:因|以)[^，。；]{0,10}(?:宣称|血仇|圣战|理由)"
+)
+# 规则 29：leased_out 写成永久授封。
+_LEASE_AS_GRANT_RE = re.compile(r"授封|赐封|册封|永赐|永久赐予|封授")
+# 规则 30：swear_fealty/independency 写成普通领土获得。
+_REALM_STATUS_AS_GAIN_RE = re.compile(
+    r"(?:获得|夺取|占领|夺得|抢得)[^，。；]{0,4}(?:领地|领土|地盘|土地)"
+)
+_REALM_STATUS_WORDS = ("效忠", "独立", "臣服", "归附")
+
+# 规则 25：各 acquisition cause 的文本代表词（用于判断正文是否分别说明了各原因）。
+_CAUSE_WORDS = {
+    "conquest": ("征服", "攻取", "夺取", "攻占"),
+    "grant": ("授予", "册封", "赐予", "赐封"),
+    "creation": ("创建", "设立", "新立"),
+    "inheritance": ("继承",),
+    "usurpation": ("篡位", "篡夺"),
+    "faction": ("派系",),
+    "administrative_transfer": ("任命", "行政"),
+    "appointment": ("任命",),
+    "unknown": ("未载", "未记录", "不详"),
+}
+
 
 class FactChecker:
     """确定性正文事实校验器（20 条规则）。"""
@@ -118,6 +164,11 @@ class FactChecker:
         event_by_id = {e.eventId: e for e in compressed.selectedEvents}
         known_names = self._known_names(compressed)
         known_titles = self._known_titles(compressed)
+        # 3C.7：历史语义事件（含 cause / normalizedAction / rawType），按事件 id 反查。
+        hist_by_id = {ev.eventId: ev for ev in (compressed.historicalEvents or [])}
+        institution_names = {
+            n for n in (compressed.realmInstitutions or []) if n and not n.isdigit()
+        }
 
         for ch in chapters:
             allowed = allowed_by_chapter.get(ch.id, set())
@@ -300,6 +351,92 @@ class FactChecker:
                         "「国王/皇帝/公爵」等爵位（headlineIdentity 用游戏原生头衔名）。",
                         "按档案 headlineIdentity / realmStatus 表述身份。",
                     ))
+
+            # ---- 3C.7 新增规则：历史动作语义误写 ----
+            hist_evs = [hist_by_id[eid] for eid in ch.eventIds if eid in hist_by_id]
+            causes = {h.acquisitionCause.value for h in hist_evs if h.acquisitionCause is not None}
+            actions = {
+                h.normalizedAction.value if h.normalizedAction is not None else ""
+                for h in hist_evs
+            }
+            raw_types = {h.acquisitionRawType for h in hist_evs if h.acquisitionRawType}
+            action_any = {a for a in (actions | raw_types) if a}
+
+            # 规则 25：同一句把不同获得原因的多地写成同一种原因。
+            # 触发条件：本章引用 ≥2 种原因，且正文没有为**每种**原因给出代表词
+            # （如只写了「征服」而未写「授予」，则把授予地误并进征服）。
+            if len(causes) > 1:
+                uncovered = [
+                    c for c in sorted(causes) if not any(w in ch.content for w in _CAUSE_WORDS.get(c, ()))
+                ]
+                if uncovered and _CAUSE_INFERENCE_RE.search(ch.content):
+                    covered = [c for c in sorted(causes) if c not in uncovered]
+                    issues.append(self._issue(
+                        "mixed_cause_group", WarningSeverity.WARNING,
+                        f"章节「{ch.id}」引用了获得原因不同的多个领地事件"
+                        f"（{sorted(causes)}），但正文只说明了 {covered}"
+                        f"，未分别说明 {uncovered}。",
+                        "按各事件自身原因分别表述（通过征服获得 / 经授予获得 / 取得方式未载）。",
+                    ))
+
+            # 规则 26：政权机构写成个人官职（机构名 + 任职动词）。
+            for inst in sorted(institution_names):
+                esc = re.escape(inst)
+                if re.search(
+                    f"(?:进入|就任|兼任|担任|出任|入职|执掌|领衔|入主|入阁){esc}", ch.content
+                ) or re.search(f"{esc}(?:任职|入职|就职|兼掌|领掌)", ch.content):
+                    issues.append(self._issue(
+                        "institution_as_personal_office", WarningSeverity.ERROR,
+                        f"章节「{ch.id}」把政权机构「{inst}」写成了个人官职"
+                        "（进入/任职/兼任/担任）。政权机构记录表示归属或控制关系，"
+                        "不代表人物在该机构任职。",
+                        "改写为「某机构归入其统治体系 / 不再属于其统治体系」。",
+                    ))
+
+            # 规则 27：appointment_succession 写成世袭/继承父位。
+            if "administrative_succession" in action_any or "appointment_succession" in action_any:
+                if _SUCCESSION_WRITING_RE.search(ch.content):
+                    issues.append(self._issue(
+                        "unsupported_succession_wording", WarningSeverity.ERROR,
+                        f"章节「{ch.id}」把行政任命体系下继任（appointment_succession）"
+                        "写成了「世袭/继承父位/承袭家业」。",
+                        "改写为「经任命继任」「在行政体系中继任」，除非另有直述证据。",
+                    ))
+
+            # 规则 28：conquest 证据被补写具体战争细节（无 war 事件支撑）。
+            has_conquest = any(
+                h.acquisitionCause == AcquisitionCause.CONQUEST
+                or (h.acquisitionRawType or "").startswith("conquest")
+                for h in hist_evs
+            )
+            has_war_event = any(e.type == "war" for e in evs)
+            if has_conquest and not has_war_event and _CONQUEST_OVERREACH_RE.search(ch.content):
+                issues.append(self._issue(
+                    "conquest_overreach", WarningSeverity.ERROR,
+                    f"章节「{ch.id}」把存档仅记录的 conquest（战争取得）补写成了"
+                    "具体战争名/对手/宣战理由/战役过程（本章无 war 事件支撑）。",
+                    "按档案写「通过战争取得某地」，不补写具体战争细节。",
+                ))
+
+            # 规则 29：leased_out 写成永久授封。
+            if "leased_out" in action_any and _LEASE_AS_GRANT_RE.search(ch.content):
+                issues.append(self._issue(
+                    "lease_as_permanent_grant", WarningSeverity.ERROR,
+                    f"章节「{ch.id}」把「租借或委托管理」（leased_out）写成了永久授封。",
+                    "改写为「租借/委托管理」，不得写成永久授封。",
+                ))
+
+            # 规则 30：swear_fealty/independency 写成普通领土获得。
+            has_fealty_or_indep = bool(action_any & {"swore_fealty", "became_independent",
+                                                     "swear_fealty", "independency"})
+            if has_fealty_or_indep and _REALM_STATUS_AS_GAIN_RE.search(ch.content) \
+                    and not any(w in ch.content for w in _REALM_STATUS_WORDS):
+                issues.append(self._issue(
+                    "realm_status_action_mismatch", WarningSeverity.ERROR,
+                    f"章节「{ch.id}」把「宣誓效忠/取得独立」（swear_fealty/independency）"
+                    "写成了普通领土获得。",
+                    "按地位关系变化书写（宣誓效忠/取得独立/臣服归附）。",
+                ))
 
         if not issues:
             return FactCheckResult(status=FactCheckStatus.PASS, issues=[])

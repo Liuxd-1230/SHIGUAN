@@ -4,6 +4,8 @@
 """
 import pytest
 from models import (
+    AcquisitionCause,
+    AcquisitionTypeSource,
     Biography,
     BiographyChapter,
     BiographyChapterOutline,
@@ -11,8 +13,12 @@ from models import (
     BiographyStyle,
     CharacterProfile,
     Confidence,
+    EntityRef,
     EventType,
     FactCheckStatus,
+    HistoricalSemanticEvent,
+    HistoricalSemanticEventType,
+    TitleHistoryActionKind,
     WarningSeverity,
 )
 
@@ -380,3 +386,270 @@ def test_check_biography_helper():
     fc = check_biography(bio, outline=outline, compressed=compressed, profile=profile)
     assert fc.status == FactCheckStatus.NEEDS_REVISION
     assert any(i.rule == "conflict_as_succession" for i in fc.issues)
+
+
+# ---------------------------------------------------------------------------
+# 3C.7：历史动作语义误写（规则 25-30）
+# ---------------------------------------------------------------------------
+
+def _profile_with_hist(timeline_events, hist_events, *, realm_institutions=None):
+    """构造带历史语义事件与政权机构的档案。"""
+    return CharacterProfile(
+        id="p1",
+        name="梁某",
+        birthDate="900.1.1",
+        deathDate="980.1.1",
+        timeline=timeline_events,
+        historicalEvents=hist_events,
+        realmInstitutions=[
+            EntityRef(id=n, name=n, type="title", resolved=True)
+            for n in (realm_institutions or [])
+        ],
+    )
+
+
+def _hist_gain(eid, date, cause, raw_type=None, action=None):
+    """构造一条 territorial_gain 历史语义事件（用于 rule 25-30）。"""
+    return HistoricalSemanticEvent(
+        eventId=eid,
+        semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+        date=date,
+        summary=f"梁某 于 {date} 获得领地。",
+        relatedTitleIds=[f"c_{eid}"],
+        confidence=Confidence.CONFIRMED,
+        acquisitionCause=cause,
+        acquisitionRawType=raw_type,
+        acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+        normalizedAction=action,
+    )
+
+
+def _fc_for(chapters, outline, profile):
+    compressed = compress_profile(
+        profile, max_events=50, include_inferred=True, include_uncertain=True
+    )
+    chapters = _backfill_facts(list(chapters), compressed)
+    return FactChecker().check(
+        chapters=chapters, outline=outline, compressed=compressed, profile=profile
+    )
+
+
+def test_mixed_cause_group():
+    """规则 25：本章引用不同获得原因的多地，正文却写成同一种原因。"""
+    profile = _profile_with_hist(
+        timeline_events=[
+            ev("g1", EventType.TITLE_GAIN, "953.11.18"),
+            ev("g2", EventType.TITLE_GAIN, "953.11.18"),
+        ],
+        hist_events=[
+            _hist_gain("g1", "953.11.18", AcquisitionCause.CONQUEST, "conquest",
+                       TitleHistoryActionKind.CONQUERED),
+            _hist_gain("g2", "953.11.18", AcquisitionCause.GRANT, "granted",
+                       TitleHistoryActionKind.GRANTED),
+        ],
+    )
+    outline = _outline([["g1", "g2"]])
+    chapters = [_chapter("c1", "他通过征服获得了这两处领地。", ["g1", "g2"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert fc.status == FactCheckStatus.NEEDS_REVISION
+    assert any(i.rule == "mixed_cause_group" for i in fc.issues)
+
+
+def test_mixed_cause_group_respected_per_cause_text_passes():
+    """规则 25 反面：正文分别说明各自原因则通过。"""
+    profile = _profile_with_hist(
+        timeline_events=[
+            ev("g1", EventType.TITLE_GAIN, "953.11.18"),
+            ev("g2", EventType.TITLE_GAIN, "953.11.18"),
+        ],
+        hist_events=[
+            _hist_gain("g1", "953.11.18", AcquisitionCause.CONQUEST, "conquest",
+                       TitleHistoryActionKind.CONQUERED),
+            _hist_gain("g2", "953.11.18", AcquisitionCause.GRANT, "granted",
+                       TitleHistoryActionKind.GRANTED),
+        ],
+    )
+    outline = _outline([["g1", "g2"]])
+    chapters = [
+        _chapter(
+            "c1",
+            "甲地经征服获得，乙地经授予获得。",
+            ["g1", "g2"],
+        )
+    ]
+    fc = _fc_for(chapters, outline, profile)
+    assert not any(i.rule == "mixed_cause_group" for i in fc.issues)
+
+
+def test_institution_as_personal_office():
+    """规则 26：政权机构写成「进入政事堂任职」被拦截。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("t1", EventType.TITLE_GAIN, "950.1.1")],
+        hist_events=[],
+        realm_institutions=["政事堂", "枢密院"],
+    )
+    outline = _outline([["t1"]])
+    chapters = [_chapter("c1", "他进入政事堂任职，掌理国政。", ["t1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert fc.status == FactCheckStatus.NEEDS_REVISION
+    assert any(i.rule == "institution_as_personal_office" for i in fc.issues)
+
+
+def test_institution_as_personal_office_suffix_form():
+    """规则 26：兼任/担任机构名也被拦截。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("t1", EventType.TITLE_GAIN, "950.1.1")],
+        hist_events=[],
+        realm_institutions=["六部", "御史台"],
+    )
+    outline = _outline([["t1"]])
+    chapters = [_chapter("c1", "他兼任六部，担任御史台。", ["t1"])]
+    fc = _fc_for(chapters, outline, profile)
+    hits = [i for i in fc.issues if i.rule == "institution_as_personal_office"]
+    assert len(hits) >= 2
+
+
+def test_institution_ownership_wording_passes():
+    """规则 26 反面：机构归入统治体系写法通过。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("t1", EventType.TITLE_GAIN, "950.1.1")],
+        hist_events=[],
+        realm_institutions=["政事堂"],
+    )
+    outline = _outline([["t1"]])
+    chapters = [
+        _chapter("c1", "该年政事堂归入其统治体系。", ["t1"])
+    ]
+    fc = _fc_for(chapters, outline, profile)
+    assert not any(i.rule == "institution_as_personal_office" for i in fc.issues)
+
+
+def test_unsupported_succession_wording():
+    """规则 27：appointment_succession 写成世袭继承被拦截。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("g1", EventType.TITLE_GAIN, "955.1.22")],
+        hist_events=[
+            _hist_gain("g1", "955.1.22", AcquisitionCause.ADMINISTRATIVE_TRANSFER,
+                       "appointment_succession",
+                       TitleHistoryActionKind.ADMINISTRATIVE_SUCCESSION),
+        ],
+    )
+    outline = _outline([["g1"]])
+    chapters = [_chapter("c1", "他世袭继承了父位。", ["g1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert any(i.rule == "unsupported_succession_wording" for i in fc.issues)
+
+
+def test_unsupported_succession_wording_neutral_passes():
+    """规则 27 反面：经任命继任的中性措辞通过。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("g1", EventType.TITLE_GAIN, "955.1.22")],
+        hist_events=[
+            _hist_gain("g1", "955.1.22", AcquisitionCause.ADMINISTRATIVE_TRANSFER,
+                       "appointment_succession",
+                       TitleHistoryActionKind.ADMINISTRATIVE_SUCCESSION),
+        ],
+    )
+    outline = _outline([["g1"]])
+    chapters = [_chapter("c1", "他在行政体系中经任命继任。", ["g1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert not any(i.rule == "unsupported_succession_wording" for i in fc.issues)
+
+
+def test_conquest_overreach():
+    """规则 28：conquest 证据被补写具体战争名/对手/战役过程。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("g1", EventType.TITLE_GAIN, "953.11.18")],
+        hist_events=[
+            _hist_gain("g1", "953.11.18", AcquisitionCause.CONQUEST, "conquest",
+                       TitleHistoryActionKind.CONQUERED),
+        ],
+    )
+    outline = _outline([["g1"]])
+    chapters = [_chapter("c1", "他在梅奥之战中击败对手，夺取了该地。", ["g1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert any(i.rule == "conquest_overreach" for i in fc.issues)
+
+
+def test_conquest_overreach_plain_wording_passes():
+    """规则 28 反面：只写「通过战争取得」则通过。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("g1", EventType.TITLE_GAIN, "953.11.18")],
+        hist_events=[
+            _hist_gain("g1", "953.11.18", AcquisitionCause.CONQUEST, "conquest",
+                       TitleHistoryActionKind.CONQUERED),
+        ],
+    )
+    outline = _outline([["g1"]])
+    chapters = [_chapter("c1", "他通过战争取得了该地。", ["g1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert not any(i.rule == "conquest_overreach" for i in fc.issues)
+
+
+def test_lease_as_permanent_grant():
+    """规则 29：leased_out 写成永久授封被拦截。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("l1", EventType.TITLE_LOSS, "953.11.18")],
+        hist_events=[
+            HistoricalSemanticEvent(
+                eventId="l1",
+                semanticType=HistoricalSemanticEventType.TERRITORIAL_LOSS,
+                date="953.11.18",
+                summary="梁某 于 953.11.18 将以下领地租借或委托管理：甲。",
+                confidence=Confidence.CONFIRMED,
+                acquisitionRawType="leased_out",
+                acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+                normalizedAction=TitleHistoryActionKind.LEASED_OUT,
+            ),
+        ],
+    )
+    outline = _outline([["l1"]])
+    chapters = [_chapter("c1", "该地被永久授封出去。", ["l1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert any(i.rule == "lease_as_permanent_grant" for i in fc.issues)
+
+
+def test_realm_status_action_mismatch():
+    """规则 30：swear_fealty/independency 写成普通领土获得被拦截。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("s1", EventType.TITLE_GAIN, "953.11.18")],
+        hist_events=[
+            HistoricalSemanticEvent(
+                eventId="s1",
+                semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+                date="953.11.18",
+                summary="梁某 于 953.11.18 取得独立地位并辖有：甲。",
+                confidence=Confidence.CONFIRMED,
+                acquisitionRawType="independency",
+                acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+                normalizedAction=TitleHistoryActionKind.BECAME_INDEPENDENT,
+            ),
+        ],
+    )
+    outline = _outline([["s1"]])
+    chapters = [_chapter("c1", "他获得了大片领地。", ["s1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert any(i.rule == "realm_status_action_mismatch" for i in fc.issues)
+
+
+def test_realm_status_action_written_as_independence_passes():
+    """规则 30 反面：按地位关系变化书写则通过。"""
+    profile = _profile_with_hist(
+        timeline_events=[ev("s1", EventType.TITLE_GAIN, "953.11.18")],
+        hist_events=[
+            HistoricalSemanticEvent(
+                eventId="s1",
+                semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+                date="953.11.18",
+                summary="梁某 于 953.11.18 取得独立地位并辖有：甲。",
+                confidence=Confidence.CONFIRMED,
+                acquisitionRawType="independency",
+                acquisitionTypeSource=AcquisitionTypeSource.SAVE_EXPLICIT,
+                normalizedAction=TitleHistoryActionKind.BECAME_INDEPENDENT,
+            ),
+        ],
+    )
+    outline = _outline([["s1"]])
+    chapters = [_chapter("c1", "他取得独立地位，辖有该地。", ["s1"])]
+    fc = _fc_for(chapters, outline, profile)
+    assert not any(i.rule == "realm_status_action_mismatch" for i in fc.issues)

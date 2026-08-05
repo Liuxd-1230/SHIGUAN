@@ -546,7 +546,7 @@ def test_build_semantic_title_events_same_day_split_by_semantic_type():
     # 领地（3 条同语义）合并为 1 条；机构（政事堂）独立 1 条 → 共 2 条 gain。
     assert len(gain) == 2, [e.title for e in gain]
     territorial = [e for e in gain if e.title == "获得领地"]
-    institution = [e for e in gain if e.title == "机构任职"]
+    institution = [e for e in gain if e.title == "机构归属变化"]  # 3C.7：不写「机构任职」
     assert len(territorial) == 1
     assert len(institution) == 1
     assert territorial[0].date == "952.8.16"

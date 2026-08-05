@@ -703,17 +703,23 @@ class PrimaryIdentityResolver:
             )
 
         # 无领地：官职 / 机构 / 宗教职务。
+        # 3C.7：政权机构不表示个人任职 —— 仅个人官职才写「X任职」；
+        # 仅持机构时如实写「X（政权机构）」，不推断其在该机构的职务。
         if offices or institutions:
             primary_key = (offices + institutions)[0]
             primary_ref = _entity_ref(cls_by_key[primary_key])
+            if primary_key in offices:
+                headline = f"{primary_ref.name}任职"
+            else:
+                headline = f"{primary_ref.name}（政权机构）"
             return CharacterIdentity(
-                headlineIdentity=f"{primary_ref.name}任职",
+                headlineIdentity=headline,
                 realmStatus=RealmStatus.LANDLESS_OFFICIAL,
                 primaryOffice=primary_ref,
                 secondaryIdentities=[],
                 confidence=identity_confidence,
                 warnings=warnings,
-                evidence=[_evidence(primary_key, "landed_titles 记录的官职/机构职务")],
+                evidence=[_evidence(primary_key, "landed_titles 记录的官职/政权机构")],
             )
 
         if religious:

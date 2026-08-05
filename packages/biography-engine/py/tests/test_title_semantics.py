@@ -371,7 +371,9 @@ def test_identity_landless_official():
     periods = [TitlePeriod(titleId="e_minister_shizheng", name="政事堂", isCurrent=True)]
     ident = PrimaryIdentityResolver(cls).resolve(periods)
     assert ident.realmStatus == RealmStatus.LANDLESS_OFFICIAL
-    assert ident.headlineIdentity == "政事堂任职"
+    # 3C.7：政权机构不表示个人任职，只如实标注「（政权机构）」。
+    assert ident.headlineIdentity == "政事堂（政权机构）"
+    assert "任职" not in ident.headlineIdentity
     assert ident.primaryOffice is not None
 
 
