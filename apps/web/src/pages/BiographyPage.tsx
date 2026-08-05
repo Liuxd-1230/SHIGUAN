@@ -7,12 +7,23 @@ import { buildDraft, eventChapterMap } from "../lib/buildOutline";
 import { titleTierLabel } from "../lib/labels";
 import { displayName } from "../lib/characterName";
 import { deriveTitleBits, type DerivedTitleBits } from "../lib/titleBits";
-import type { TitlePeriod } from "@shiguan/save-schema";
+import type {
+  CharacterIdentity,
+  CharacterProfile,
+  TitlePeriod,
+} from "@shiguan/save-schema";
 import Timeline, { TimelineDensity } from "../components/Timeline";
 import EvidencePanel from "../components/EvidencePanel";
 import MemoriesPanel from "../components/MemoriesPanel";
 import OutlinePanel from "../components/OutlinePanel";
 import BiographyPanel from "../components/BiographyPanel";
+import {
+  EntityListSection,
+  HistoricalEventsSection,
+  IdentitySection,
+  SectionHeading,
+  TerritorySection,
+} from "../components/SemanticSections";
 import PortraitFrame from "../components/PortraitFrame";
 import MuseumSurface from "../components/MuseumSurface";
 import ScrollPanel from "../components/ScrollPanel";
@@ -49,6 +60,18 @@ function prefersReducedMotion(): boolean {
     typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
   );
+}
+
+/** 3C.5 一句话生平：确定性史料摘要（主要身份 + 生卒），非 AI 生成。 */
+function oneLineLife(
+  profile: CharacterProfile,
+  identity: CharacterIdentity | undefined,
+  bits: DerivedTitleBits | null,
+): string {
+  const name = displayName(profile.name, profile.dynasty);
+  const head = identity?.headlineIdentity ?? titleBitsText(bits);
+  const span = lifeSpan(profile.birthDate, profile.deathDate, !profile.deathDate);
+  return `${name}：${head}，${span}。`;
 }
 
 function isDesktop(): boolean {
@@ -296,12 +319,63 @@ export default function BiographyPage() {
         </div>
       </MuseumSurface>
 
+      {/* 3C.2 主要身份（headline / realmStatus / 主领地，确定性推导） */}
       <div className="mt-6">
-        <TitlesPanel titles={profile.titles} />
+        <IdentitySection identity={profile.identity} />
       </div>
 
+      {/* 3C.5 一句话生平（确定性史料摘要，非 AI 生成） */}
       <div className="mt-6">
-        <MemoriesPanel profile={profile} />
+        <MuseumSurface variant="raised" className="p-4">
+          <SectionHeading
+            title="一句话生平"
+            hint="由主要身份与生卒年份确定性整理；不含模型想象。"
+          />
+          <p className="font-serif text-base leading-relaxed text-ink-800">
+            {oneLineLife(profile, profile.identity, titleBits)}
+          </p>
+        </MuseumSurface>
+      </div>
+
+      {/* 史料摘要（确定性整理；正文由下方「AI 提纲」生成） */}
+      <div className="mt-6">
+        <div className="mb-3">
+          <h2 className="font-serif text-lg font-bold text-ink-900">史料摘要</h2>
+          <p className="mt-1 text-xs text-ink-500">
+            由存档事实确定性整理，非 AI 传记正文（正文由下方「AI 提纲」生成）
+          </p>
+        </div>
+        <div className="space-y-5">
+          {draft.chapters.map((ch) => {
+            const active = ch.id === activeChapterId;
+            return (
+              <motion.div
+                key={ch.id}
+                initial={{ opacity: 0, y: 10 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true, margin: "-8% 0px -8% 0px" }}
+                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+              >
+                <ScrollPanel
+                  as="article"
+                  id={`chapter-${ch.id}`}
+                  className={cn(
+                    "transition-colors",
+                    active && "ring-1 ring-cinnabar-700/40",
+                  )}
+                >
+                  <h3 className="font-serif text-lg font-bold text-ink-900">
+                    {ch.title}
+                  </h3>
+                  <InkDivider className="my-3" animateInk />
+                  <p className="text-sm leading-relaxed text-ink-700">
+                    {ch.content}
+                  </p>
+                </ScrollPanel>
+              </motion.div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Phase 3A：AI 传记提纲（仅真实模式；打开页面不自动生成，点按钮才调用模型） */}
@@ -318,88 +392,95 @@ export default function BiographyPage() {
         </div>
       )}
 
-      <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* 时间线 + 密度控制（移动端排正文之后） */}
-        <section className="order-2 lg:order-1">
-          <div className="mb-2 flex items-center gap-2 text-xs">
-            <span className="text-ink-500">密度</span>
-            {(["all", "key"] as TimelineDensity[]).map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setDensity(d)}
-                aria-pressed={density === d}
-                className={cn(
-                  "min-h-[2.25rem] rounded border px-2 py-0.5 transition-colors",
-                  density === d
-                    ? "border-cinnabar-700/60 text-cinnabar-700"
-                    : "border-ink-400/50 text-ink-500 hover:text-ink-900",
-                )}
-              >
-                {d === "all" ? "全部事件" : "关键事件"}
-              </button>
-            ))}
-          </div>
-          <Timeline
-            events={profile.timeline}
-            activeId={activeEventId}
-            activeChapterEventIds={activeChapterEventIds}
-            onSelect={selectEvent}
-            density={density}
-          />
-        </section>
+      {/* 时间线（密度切换 = 关键时间线 / 全部事件） */}
+      <section className="mt-6">
+        <div className="mb-2 flex items-center gap-2 text-xs">
+          <span className="text-ink-500">密度</span>
+          {(["all", "key"] as TimelineDensity[]).map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setDensity(d)}
+              aria-pressed={density === d}
+              className={cn(
+                "min-h-[2.25rem] rounded border px-2 py-0.5 transition-colors",
+                density === d
+                  ? "border-cinnabar-700/60 text-cinnabar-700"
+                  : "border-ink-400/50 text-ink-500 hover:text-ink-900",
+              )}
+            >
+              {d === "all" ? "全部事件" : "关键事件"}
+            </button>
+          ))}
+        </div>
+        <Timeline
+          events={profile.timeline}
+          activeId={activeEventId}
+          activeChapterEventIds={activeChapterEventIds}
+          onSelect={selectEvent}
+          density={density}
+        />
+      </section>
 
-        {/* 传记正文（移动端置顶） */}
-        <section className="order-1 lg:order-2">
-          <div className="mb-3">
-            <h2 className="font-serif text-lg font-bold text-ink-900">史料摘要</h2>
-            <p className="mt-1 text-xs text-ink-500">
-              由存档事实确定性整理，非 AI 传记正文（正文由下方「AI 提纲」生成）
-            </p>
-          </div>
-          <div className="space-y-5">
-            {draft.chapters.map((ch) => {
-              const active = ch.id === activeChapterId;
-              return (
-                <motion.div
-                  key={ch.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  whileInView={{ opacity: 1, y: 0 }}
-                  viewport={{ once: true, margin: "-8% 0px -8% 0px" }}
-                  transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <ScrollPanel
-                    as="article"
-                    id={`chapter-${ch.id}`}
-                    className={cn(
-                      "transition-colors",
-                      active && "ring-1 ring-cinnabar-700/40",
-                    )}
-                  >
-                    <h3 className="font-serif text-lg font-bold text-ink-900">
-                      {ch.title}
-                    </h3>
-                    <InkDivider className="my-3" animateInk />
-                    <p className="text-sm leading-relaxed text-ink-700">
-                      {ch.content}
-                    </p>
-                  </ScrollPanel>
-                </motion.div>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* 史料依据面板 */}
-        <section className="order-3 lg:order-3">
-          <MuseumSurface variant="inset" className="p-4">
-            <EvidencePanel
-              event={activeEvent}
-              warnings={profile.evidenceWarnings}
-            />
-          </MuseumSurface>
-        </section>
+      {/* 统治身份：现任 + 历史任期（M3 TitlesPanel） */}
+      <div className="mt-6">
+        <TitlesPanel titles={profile.titles} />
       </div>
+
+      {/* 3C.3 统治历程：按语义类型拆分的获得/失去（不推断因果） */}
+      <div className="mt-6">
+        <HistoricalEventsSection events={profile.historicalEvents} />
+      </div>
+
+      {/* 3C.2 领土 / 个人官职 / 政权机构 / 宗教职务 / 荣誉 / 宣称 */}
+      <div className="mt-6">
+        <TerritorySection
+          major={profile.majorTerritories}
+          subordinate={profile.subordinateTerritories}
+        />
+      </div>
+      <div className="mt-6">
+        <EntityListSection
+          title="个人官职"
+          hint="由 landed_titles 现任任职反解；无任职则不出此区。"
+          items={profile.personalOffices}
+        />
+      </div>
+      <div className="mt-6">
+        <EntityListSection
+          title="政权机构"
+          hint="存档可证的机构任职（如政事堂/枢密院），按存档记录如实列出。"
+          items={profile.realmInstitutions}
+        />
+      </div>
+      <div className="mt-6">
+        <EntityListSection title="宗教职务" items={profile.religiousOffices} />
+      </div>
+      <div className="mt-6">
+        <EntityListSection title="荣誉头衔" items={profile.honors} />
+      </div>
+      <div className="mt-6">
+        <EntityListSection
+          title="宣称"
+          hint="存档可证的宣称；不代表实际持有或获得原因。"
+          items={profile.claims}
+        />
+      </div>
+
+      {/* 家庭关系与记忆（M4 MemoriesPanel） */}
+      <div className="mt-6">
+        <MemoriesPanel profile={profile} />
+      </div>
+
+      {/* 史料依据 / 证据诊断面板 */}
+      <section className="mt-6">
+        <MuseumSurface variant="inset" className="p-4">
+          <EvidencePanel
+            event={activeEvent}
+            warnings={profile.evidenceWarnings}
+          />
+        </MuseumSurface>
+      </section>
     </div>
   );
 }

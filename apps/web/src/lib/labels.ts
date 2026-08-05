@@ -1,5 +1,5 @@
 /** 中文标签映射，集中管理避免散落。 */
-import type { Confidence, TitleTier } from "@shiguan/save-schema";
+import type { Confidence, RealmStatus, TitleTier } from "@shiguan/save-schema";
 
 export const CONFIDENCE_LABELS: Record<Confidence, string> = {
   confirmed: "确认",
@@ -77,4 +77,22 @@ export function eventTypeLabel(key: string): string {
 
 export function confidenceLabel(c: Confidence): string {
   return CONFIDENCE_LABELS[c] ?? c;
+}
+
+/** 人物身份地位中文名（3C.2 PrimaryIdentityResolver 的 RealmStatus）。 */
+export const REALM_STATUS_LABELS: Record<RealmStatus, string> = {
+  independent_ruler: "独立最高统治者",
+  vassal_ruler: "封臣统治者",
+  landless_official: "无地官员",
+  religious_leader: "宗教领袖",
+  regent: "摄政",
+  adventurer: "冒险者（无地）",
+  courtier: "廷臣（无头衔无领地）",
+  former_ruler: "前统治者",
+  prisoner: "囚犯",
+  unknown: "无法判定",
+};
+
+export function realmStatusLabel(status?: RealmStatus): string | null {
+  return status ? (REALM_STATUS_LABELS[status] ?? null) : null;
 }
