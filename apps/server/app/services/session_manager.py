@@ -213,9 +213,19 @@ class SessionManager:
                 with self._lock:
                     self._sessions[key] = sess
                 return sess
+            # 缓存无效：目录可能残留损坏半成品（melt 超时/中断后留下部分文件，如
+            # manifest 版本旧、memories 截断）。直接向脏目录覆盖写可能再次留下混合
+            # 文件；先清理该目录再 melt，保证一次完整重建（自愈）。
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
             cache_dir.mkdir(parents=True, exist_ok=True)
-            # 真正 melt 一次（adapter.prepare 内部调用 Rust `prepare`）。
-            self.adapter.prepare(staging_path, cache_dir)
+            try:
+                # 真正 melt 一次（adapter.prepare 内部调用 Rust `prepare`）。
+                self.adapter.prepare(staging_path, cache_dir)
+            except Exception:
+                # melt 失败（超时/格式不支持）→ 移除不完整产物，避免下次复用半成品。
+                shutil.rmtree(cache_dir, ignore_errors=True)
+                raise
             self.prepare_calls += 1
             # M3.2：记录本次使用的 reader 二进制指纹，供重启后判断缓存归属。
             self._write_marker()

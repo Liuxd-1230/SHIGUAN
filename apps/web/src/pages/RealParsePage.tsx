@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useEffect, useRef, useState } from "react";import { motion } from "framer-motion";
 import { api } from "../lib/api";
 import { navigate, ROUTES } from "../lib/router";
 import { setActiveSaveId } from "../lib/realRepository";
@@ -74,6 +73,9 @@ export default function RealParsePage({
   const [parseError, setParseError] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [showSeal, setShowSeal] = useState(false);
+  // 当前 running 阶段已耗时（秒）：用于展示「已等待 X 秒」，降低大存档首解析的焦虑。
+  const [runningSince, setRunningSince] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   const mark = useCallback(
     (id: string, status: StageStatus, error?: string) => {
@@ -82,9 +84,25 @@ export default function RealParsePage({
           st.id === id ? { ...st, status, ...(error ? { error } : {}) } : st,
         ),
       );
+      // running 阶段开始计时；离开 running（success/error）清零。
+      if (status === "running") {
+        setRunningSince(Date.now());
+        setElapsed(0);
+      } else {
+        setRunningSince(null);
+      }
     },
     [],
   );
+
+  // 每秒刷新已等待时长（仅 running 阶段）。
+  useEffect(() => {
+    if (runningSince === null) return;
+    const timer = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - runningSince) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [runningSince]);
 
   const runStages = useCallback(async () => {
     abortRef.current?.abort();
@@ -157,6 +175,7 @@ export default function RealParsePage({
         正在解析真实 CK3 存档。以下阶段由
         <span className="font-medium text-gold-700">后端真实结果</span>
         驱动（初检 → Mod → 一次 melt + 索引），非模拟进度。
+        大型存档首次解析可能需要 1–3 分钟，请耐心等待，不要关闭页面。
       </div>
 
       <ol className="mt-8 space-y-0">
@@ -188,6 +207,11 @@ export default function RealParsePage({
                   >
                     {stage.label}
                   </span>
+                  {stage.status === "running" && elapsed > 0 && (
+                    <p className="mt-1 text-xs text-ink-500">
+                      已等待 {elapsed} 秒……
+                    </p>
+                  )}
                   {stage.status === "error" && stage.error && (
                     <p className="mt-1 break-words text-sm text-cinnabar-700">
                       {stage.error}

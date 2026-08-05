@@ -125,5 +125,6 @@ def resolve_game_dir() -> Path | None:
     return None
 
 
-# 子进程超时（秒）：单存档 melt + 扫描，5.5s 实测，留足余量
-READER_TIMEOUT_SECONDS = int(os.environ.get("SHIGUAN_READER_TIMEOUT", "120"))
+# 子进程超时（秒）：单存档 melt + 扫描。大存档（30MB+ TextZip）在慢磁盘/杀毒
+# 扫描下实测可达 1-2 分钟，默认 300s 留足余量；可用 SHIGUAN_READER_TIMEOUT 覆盖。
+READER_TIMEOUT_SECONDS = int(os.environ.get("SHIGUAN_READER_TIMEOUT", "300"))

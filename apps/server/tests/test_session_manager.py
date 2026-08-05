@@ -313,3 +313,94 @@ def test_stale_cache_from_different_binary_is_invalid(tmp_path):
     sess3 = sm3.prepare("s1", "sigA", "staging.ck3")
     assert adapter3.prepare_calls == 1  # 不信任旧二进制的缓存，重建
     assert sess3.character_count == 3
+
+
+def test_dirty_cache_dir_is_cleared_before_remelt(tmp_path):
+    """3C.7 超时修复：缓存无效时若目录残留损坏半成品（melt 中断留下部分文件），
+    必须先清理目录再 melt，避免向脏目录覆盖写造成混合文件（自愈）。
+
+    用户报告"加载存档后端超时"根因：manifest 版本旧 + memories 截断 → 每次请求
+    都重新 melt 且 melt 超时被杀 → 留下更脏的半成品 → 恶性循环。本测试锁定：
+    无效缓存目录在重建前被整目录清空（prepare 后目录里只有本次 melt 的产物）。
+    """
+    adapter = FakeAdapter()
+    sm = SessionManager(tmp_path / "cache", adapter)
+    sess = sm.prepare("s1", "sigA", "staging.ck3")
+    # 模拟损坏：memories.json 截断为非法 JSON + manifest 版本改旧。
+    mem_path = sess.cache_dir / "memories.json"
+    mem_path.write_bytes(b"{broken")
+    mani_path = sess.cache_dir / "manifest.json"
+    mani = json.loads(mani_path.read_text(encoding="utf-8"))
+    mani["cache_schema_version"] = "2"
+    mani_path.write_text(json.dumps(mani), encoding="utf-8")
+    # 额外放一个"旧脏文件"：若重建前未清理目录，它会被带进新缓存。
+    (sess.cache_dir / "stale.tmp").write_text("dirty", encoding="utf-8")
+    # 重启：缓存判无效 → 必须清目录后完整重建。
+    adapter2 = FakeAdapter()
+    sm2 = SessionManager(tmp_path / "cache", adapter2)
+    sess2 = sm2.prepare("s1", "sigA", "staging.ck3")
+    assert adapter2.prepare_calls == 1  # 不信任脏缓存，重建
+    assert sess2.character_count == 3
+    # 自愈：脏目录被清理，旧残留文件不再存在；新缓存全部有效。
+    assert not (sess2.cache_dir / "stale.tmp").exists()
+    assert not (sess2.cache_dir / "memories.json").read_text(
+        encoding="utf-8"
+    ).startswith("{broken")
+    fresh = json.loads((sess2.cache_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert fresh["cache_schema_version"] == CACHE_SCHEMA_VERSION
+
+
+def test_melt_failure_removes_halfwritten_cache(tmp_path):
+    """3C.7 超时修复：melt 失败（超时/格式不支持）时必须移除不完整产物，
+    避免下次请求复用半成品缓存继续失败（自愈）。
+    """
+    adapter = FakeAdapter()
+
+    def failing_prepare(staging_path, cache_dir):
+        # 先写一部分文件（模拟超时被杀前的半成品），再抛异常。
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "meta.json").write_text('{"partial": true}', encoding="utf-8")
+        raise RuntimeError("melt 超时")
+
+    adapter.prepare = failing_prepare  # type: ignore[method-assign]
+    sm = SessionManager(tmp_path / "cache", adapter)
+    try:
+        sm.prepare("s1", "sigA", "staging.ck3")
+        raise AssertionError("prepare 应抛出异常")
+    except RuntimeError:
+        pass
+    # 半成品目录必须被移除（自愈：不让脏文件残留）
+    assert not (tmp_path / "cache" / "s1" / "sigA").exists()
+
+
+def test_prepare_succeeds_after_failed_melt(tmp_path):
+    """3C.7 超时修复：melt 失败后（半成品已移除），下次请求可正常重建。
+    模拟"首次超时 → 清理 → 重试成功"的完整自愈闭环。
+    """
+    adapter = FakeAdapter()
+    fail = True
+
+    def flaky_prepare(staging_path, cache_dir):
+        nonlocal fail
+        if fail:
+            fail = False
+            cache_dir = Path(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "meta.json").write_text('{"partial": true}', encoding="utf-8")
+            raise RuntimeError("melt 超时")
+        return FakeAdapter.prepare(adapter, staging_path, cache_dir)
+
+    adapter.prepare = flaky_prepare  # type: ignore[method-assign]
+    sm = SessionManager(tmp_path / "cache", adapter)
+    try:
+        sm.prepare("s1", "sigA", "staging.ck3")
+    except RuntimeError:
+        pass
+    # 第一次失败后目录被清空 → 第二次重试成功
+    sess = sm.prepare("s1", "sigA", "staging.ck3")
+    assert sess.character_count == 3
+    assert adapter.prepare_calls == 1
+    # 第三次命中缓存，不再 melt
+    sm.prepare("s1", "sigA", "staging.ck3")
+    assert adapter.prepare_calls == 1

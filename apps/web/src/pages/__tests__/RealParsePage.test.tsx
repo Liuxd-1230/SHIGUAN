@@ -116,4 +116,13 @@ describe("RealParsePage（真实后端驱动解析过程页）", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(useStore.getState().backendMode).toBe(true);
   });
+
+  it("提示大型存档首次解析耗时较长（降低等待焦虑）", () => {
+    mockApi();
+    render(<RealParsePage saveId={SAVE_ID} successSealMs={0} />);
+    // 顶部说明包含「首次解析可能需要 1–3 分钟」的提示文案。
+    expect(
+      screen.getByText(/大型存档首次解析可能需要 1–3 分钟/),
+    ).toBeInTheDocument();
+  });
 });
