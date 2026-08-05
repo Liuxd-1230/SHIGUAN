@@ -31,7 +31,7 @@ def _compressed(pid="p1"):
 
 
 def test_version_is_frozen():
-    assert PROMPT_VERSION == "outline.zh-Hans.v2"
+    assert PROMPT_VERSION == "outline.zh-Hans.v3"
 
 
 def test_system_prompt_loaded():

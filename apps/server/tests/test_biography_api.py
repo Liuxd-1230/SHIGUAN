@@ -29,13 +29,22 @@ from test_routing_api import FakeAdapter
 
 _EVENT_ID_RE = re.compile(r"\[([a-zA-Z0-9_.-]+)\]")
 _CHAPTER_RE = re.compile(r"章节：([a-zA-Z0-9_.-]+)《([^》]*)》")
+# 只从「## 事件（id 列表）」小节提取 id（3C.5 事实区的 [f-xxx] 不是事件 id）。
+_EVENT_BLOCK_RE = re.compile(r"## 事件（id 列表）\n(.*?)(?=\n## |\Z)", re.S)
+
+
+def _event_ids(prompt: str) -> list[str]:
+    m = _EVENT_BLOCK_RE.search(prompt)
+    if not m:
+        return []
+    return _EVENT_ID_RE.findall(m.group(1))
 
 
 class EchoBiographyProvider(FakeLlmProvider):
     """从 user_prompt 的本章事件 id 确定性构建合法章节（内容无日期/无风险词）。"""
 
     def generate_json(self, **kw) -> dict:
-        ids = _EVENT_ID_RE.findall(kw["user_prompt"])
+        ids = _event_ids(kw["user_prompt"])
         m = _CHAPTER_RE.search(kw["user_prompt"])
         cid = m.group(1) if m else (ids[0] if ids else "c1")
         title = m.group(2) if m else cid
@@ -52,7 +61,7 @@ class BadBiographyProvider(FakeLlmProvider):
     """始终输出含虚构对白的章节 → FactChecker 拦截 → 修复耗尽 → needs_revision。"""
 
     def generate_json(self, **kw) -> dict:
-        ids = _EVENT_ID_RE.findall(kw["user_prompt"])
+        ids = _event_ids(kw["user_prompt"])
         m = _CHAPTER_RE.search(kw["user_prompt"])
         cid = m.group(1) if m else (ids[0] if ids else "c1")
         return {

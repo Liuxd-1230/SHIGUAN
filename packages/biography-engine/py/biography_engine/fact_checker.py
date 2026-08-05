@@ -1,10 +1,10 @@
-"""确定性事实校验器（Phase 3B 第 8 步）—— 20 条规则。
+"""确定性事实校验器（Phase 3B 第 8 步 + 3C.5）—— 24 条规则。
 
 全部确定性（同输入同输出），**不调用 LLM**。对正文逐章校验，产出
 `FactCheckResult`（status + issues）。WARNING/ERROR 级问题 → needs_revision；
 仅 INFO 级问题不强制重写。
 
-规则清单（20 条，覆盖交接文档要求）：
+规则清单（24 条）：
   1  event_id_not_allowed     章节引用了不在该章允许列表的事件（每章只用该章事件）
   2  event_after_death        引用事件日期晚于人物死亡日期
   3  time_reversal            正文日期与本章事件日期明显冲突（早/晚太多）
@@ -25,6 +25,11 @@
   18 model_meta_leak          正文含 JSON/schema/eventIds/prompt 等模型元信息
   19 empty_chapter            章节正文为空
   20 markdown_leak            正文含 markdown 围栏/URL
+  # ---- 3C.5 新增 ----
+  21 fact_ref_invalid         本章 factIds 为空或指向档案外的事实
+  22 cause_inference          存档未记录获得途径却写成继承/征服/册封（违反叙事约束）
+  23 peerage_mismatch         非独立最高统治者却写成「国王/皇帝/公爵」等爵位
+  24 event_fact_grounding     事件未被任何事实锚定（事件→事实不可追溯）
 """
 from __future__ import annotations
 
@@ -85,6 +90,16 @@ _DEATH_YEAR_PREFIX_RE = re.compile(r"(?:卒于|逝世于|死于|去世于)\s*(\d
 _DEATH_YEAR_SUFFIX_RE = re.compile(r"(\d{1,4})\s*年\s*(?:逝世|去世|卒|身亡|殁)")
 _BIRTH_YEAR_PREFIX_RE = re.compile(r"(?:生于|出生于|诞于)\s*(\d{1,4})\s*年")
 _BIRTH_YEAR_SUFFIX_RE = re.compile(r"(\d{1,4})\s*年\s*(?:出生|诞生|降生)")
+
+# 3C.5 新增规则的正则。
+# 规则 22：因果推断词汇（存档未记录获得途径时出现 → 推断因果）。
+_CAUSE_INFERENCE_RE = re.compile(
+    r"继承|征服|篡位|篡夺|册封|分封|攻取|攻占|占领|战利|战后所得|以战功|因战获|夺取|吞并"
+)
+# 规则 23：把身份写成爵位（realmStatus 非独立最高统治者时出现 → 错配）。
+_PEERAGE_AS_IDENTITY_RE = re.compile(
+    r"(?:成为|自立为|即位为|加冕为|登基为|受封为)(?:.{0,6}?)(?:国王|皇帝|公爵|伯爵|男爵)"
+)
 
 
 class FactChecker:
@@ -233,6 +248,59 @@ class FactChecker:
                                 "按存档出生日期写。",
                             ))
 
+            # ---- 3C.5 新增规则：事实引用 / 事实锚定 / 因果推断 / 爵位错配 ----
+            # 规则 21：本章 factIds 必须非空且全部指向压缩档案中的事实。
+            fact_ids = {f.id for f in compressed.facts}
+            for fid in ch.factIds or []:
+                if fid not in fact_ids:
+                    issues.append(self._issue(
+                        "fact_ref_invalid", WarningSeverity.ERROR,
+                        f"章节「{ch.id}」引用了档案中不存在的事实 id：{fid}。",
+                        "只引用「事实（id 列表）」中列出的事实。",
+                    ))
+            if not (ch.factIds or []):
+                issues.append(self._issue(
+                    "fact_ref_invalid", WarningSeverity.WARNING,
+                    f"章节「{ch.id}」没有关联任何事实 id（factIds 为空）。",
+                    "由事件回填本章事实（identity + 事件锚定事实）。",
+                ))
+            # 规则 24：每个 eventId 必须被至少一条事实锚定（事件→事实可追溯）。
+            fact_by_event: dict[str, str] = {}
+            for f in compressed.facts:
+                for eid in f.sourceEventIds or []:
+                    fact_by_event.setdefault(eid, f.id)
+            for eid in ch.eventIds:
+                if eid not in fact_by_event:
+                    issues.append(self._issue(
+                        "event_fact_grounding", WarningSeverity.WARNING,
+                        f"章节「{ch.id}」引用的事件 {eid} 没有被任何事实锚定。",
+                        "确保该事件存在于压缩档案事实集中。",
+                    ))
+            # 规则 22：获得原因未知却写成继承/征服/册封等因果。
+            unknown_cause_events = [
+                ev
+                for ev in (compressed.historicalEvents or [])
+                if ev.acquisitionCause is not None
+                and ev.acquisitionCause.value == "unknown"
+                and ev.date in {e.date for e in evs}
+            ]
+            if unknown_cause_events and _CAUSE_INFERENCE_RE.search(ch.content):
+                issues.append(self._issue(
+                    "cause_inference", WarningSeverity.ERROR,
+                    f"章节「{ch.id}」把存档未记录途径的领地获得写成了"
+                    "继承/征服/册封等具体原因（违反叙事约束）。",
+                    "按档案写「获得/持有」，不推断因果。",
+                ))
+            # 规则 23：身份表述写成爵位（与 realmStatus 不符）。
+            if compressed.identity.realmStatus not in (None, "independent_ruler"):
+                if _PEERAGE_AS_IDENTITY_RE.search(ch.content):
+                    issues.append(self._issue(
+                        "peerage_mismatch", WarningSeverity.WARNING,
+                        f"章节「{ch.id}」把非独立最高统治者的身份写成了"
+                        "「国王/皇帝/公爵」等爵位（headlineIdentity 用游戏原生头衔名）。",
+                        "按档案 headlineIdentity / realmStatus 表述身份。",
+                    ))
+
         if not issues:
             return FactCheckResult(status=FactCheckStatus.PASS, issues=[])
         status = (
@@ -269,21 +337,16 @@ class FactChecker:
 
     def _known_names(self, compressed: CompressedProfile) -> Set[str]:
         names: Set[str] = set()
+        if compressed.identity.displayName:
+            names.add(compressed.identity.displayName)
         for block in (
-            compressed.identityFacts,
-            compressed.familyFacts,
-            compressed.titleFacts,
-            compressed.relationshipFacts,
+            compressed.family,
+            compressed.relationships,
         ):
             for f in block:
-                for token in re.findall(r"[^\s：:、，。]+", f):
-                    if "：" in f and token != f:
-                        pass
-        # 更可靠：从事实块的值部分与相关人物名收集。
-        for f in compressed.identityFacts + compressed.familyFacts + compressed.relationshipFacts:
-            name = f.split("：", 1)[-1].split("、")[0].strip("（）() ")
-            if name:
-                names.add(name)
+                name = f.split("：", 1)[-1].split("、")[0].strip("（）() ")
+                if name:
+                    names.add(name)
         for r in compressed.relatives:
             names.add(r.name)
         for e in compressed.selectedEvents:
@@ -293,13 +356,22 @@ class FactChecker:
 
     def _known_titles(self, compressed: CompressedProfile) -> Set[str]:
         titles: Set[str] = set()
-        for t in compressed.titleFacts:
-            name = t.split("：", 1)[-1].split("（", 1)[0].strip()
-            if name:
-                titles.add(name)
-        if compressed.reignSummary:
-            for name in re.findall(r"[^\s、；。]+", compressed.reignSummary.split("主要头衔：", 1)[-1]) if "主要头衔" in compressed.reignSummary else []:
-                titles.add(name.strip())
+        for name in compressed.territorialDomain.currentMajorTerritories:
+            titles.add(name)
+        for name in (
+            compressed.personalOffices
+            + compressed.realmInstitutions
+            + compressed.religiousOffices
+            + compressed.honors
+            + compressed.claims
+        ):
+            titles.add(name)
+        if compressed.identity.primaryRealmTitle:
+            titles.add(compressed.identity.primaryRealmTitle)
+        if compressed.identity.primaryOffice:
+            titles.add(compressed.identity.primaryOffice)
+        for ev in compressed.historicalEvents:
+            titles.add(ev.summary)
         return titles
 
     @staticmethod

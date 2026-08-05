@@ -37,7 +37,7 @@ def _chapter_outline(cid, event_ids, title="章"):
 
 
 def test_version_and_system_prompt():
-    assert CHAPTER_PROMPT_VERSION == "biography-chapter.zh-Hans.v1"
+    assert CHAPTER_PROMPT_VERSION == "biography-chapter.zh-Hans.v2"
     sp = load_chapter_system_prompt()
     assert "硬性约束" in sp
     assert "不得生成对白" in sp

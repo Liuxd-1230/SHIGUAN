@@ -44,10 +44,22 @@ def _chapter(ch_id, content, event_ids):
     )
 
 
+def _backfill_facts(chapters, compressed):
+    """与 BiographyGenerator 同一规则：身份事实 + 本章事件锚定事实。"""
+    from biography_engine.chapter_prompts import facts_for_chapter
+
+    for ch in chapters:
+        cf = facts_for_chapter(compressed, ch.eventIds)
+        ch.factIds = [f.id for f in cf]
+        ch.claims = [f.text for f in cf]
+    return chapters
+
+
 def _check(chapters, outline, profile):
     compressed = compress_profile(
         profile, max_events=50, include_inferred=True, include_uncertain=True
     )
+    chapters = _backfill_facts(list(chapters), compressed)
     return FactChecker().check(
         chapters=chapters,
         outline=outline,

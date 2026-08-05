@@ -157,6 +157,8 @@ class BiographyGenerator:
             modelName=getattr(self.provider, "model", None) or "unknown",
             factCheck=fact_check,
             profileDigest=profile_digest,
+            # 3C.5：全文事实集（确定性提炼，供 factIds 与校验追溯）。
+            facts=list(compressed.facts),
         )
         return BiographyGenerationResult(
             biography=biography,
@@ -207,6 +209,9 @@ class BiographyGenerator:
                     current_prompt = build_chapter_repair_prompt(user_prompt, errs)
                     continue
                 return None, retry, ProviderError("；".join(errs[:3])), []
+
+            # 3C.5：确定性回填本章 factIds / claims（与提示给模型的事实一致）。
+            self._backfill_facts(ch, compressed)
 
             # 确定性 FactCheck（本章子集 + 单章提纲）。
             fc = checker.check(
@@ -259,3 +264,18 @@ class BiographyGenerator:
         if errs:
             return None, errs
         return ch, []
+
+    def _backfill_facts(
+        self, ch: BiographyChapter, compressed: CompressedProfile
+    ) -> None:
+        """3C.5：确定性回填本章 factIds 与 claims（不依赖模型输出）。
+
+        - factIds = 身份事实（f-headline / f-identity-*）+ 本章事件锚定的事实；
+        - claims = 上述事实的文本（本章正文所依赖的确定性主张）。
+        与 chapter_prompts.facts_for_chapter 同一规则，保证提示与校验一致。
+        """
+        from .chapter_prompts import facts_for_chapter
+
+        chapter_facts = facts_for_chapter(compressed, ch.eventIds)
+        ch.factIds = [f.id for f in chapter_facts]
+        ch.claims = [f.text for f in chapter_facts]

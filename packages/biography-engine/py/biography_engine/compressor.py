@@ -1,8 +1,16 @@
-"""确定性档案压缩（Phase 3A 5.4）。
+"""确定性档案压缩（Phase 3C.4：CompressedProfile v3）。
 
-`compress_profile` 把 CharacterProfile 压缩成 CompressedProfile（唯一允许传给模型的载体）。
-规则全部确定性（同输入同配置 → 同输出），**禁止调用 LLM**；
+`compress_profile` 把 CharacterProfile 压缩成 CompressedProfile v3（唯一允许传给
+模型的载体）。规则全部确定性（同输入同配置 → 同输出），**禁止调用 LLM**；
 unresolved 数字人物名不进入自然语言摘要（走 llm_input_filter）。
+
+v3 结构化（3C.4）：
+  - identity（身份）/ dynasticIdentity（世系）/ territorialDomain（领土域）；
+  - personalOffices / realmInstitutions / religiousOffices / honors / claims
+    （来自后端头衔语义分类，3C.2 产出）；
+  - family / relatives / relationships / wars / historicalEvents；
+  - facts（3C.5 确定性事实集，供 BiographyChapter.factIds 引用）；
+  - narrativeConstraints（如「不得推断因果」，来自历史语义事件）。
 
 强制保留（优先于 max_events）：
   - 出生 / 死亡事件（存在时）
@@ -11,15 +19,28 @@ unresolved 数字人物名不进入自然语言摘要（走 llm_input_filter）�
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
-from models import CharacterProfile, Confidence, TimelineEvent
+from models import (
+    CharacterProfile,
+    Confidence,
+    FactRef,
+    TimelineEvent,
+)
 
 from app.services.llm_input_filter import sanitize_character_ref_for_llm
-from .title_semantics import _date_key  # 3C.3：解耦，避免 biography_engine ↔ app 循环导入（完整 v3 见 3C.4）
 
 from .importance import highest_title_tier_value, is_mandatory_keep, score_event
-from .models import COMPRESSION_VERSION, CompressedEvent, CompressedProfile, CompressedRelative
+from .models import (
+    COMPRESSION_VERSION,
+    CompressedDynasticIdentity,
+    CompressedEvent,
+    CompressedIdentity,
+    CompressedProfile,
+    CompressedRelative,
+    CompressedTerritorialDomain,
+)
+from .title_semantics import _date_key
 from .war_narrative import WarNarrativeNormalizer
 from .warning_aggregator import aggregate_warnings
 
@@ -44,7 +65,7 @@ DEFAULT_MAX_RELATIVES_PER_GROUP = 5  # 向后兼容旧配置的默认值（v1 �
 # traits 展示上限。
 MAX_TRAITS = 10
 
-# 头衔等级排序（reignSummary 的 majorTitles 排序用）。
+# 头衔等级排序（territorialDomain 排序用）。
 _TIER_RANK = {
     "barony": 0,
     "county": 1,
@@ -52,6 +73,7 @@ _TIER_RANK = {
     "kingdom": 3,
     "empire": 4,
 }
+
 
 # 一个事件用于"阶段代表"的最早可能日期分桶（按年份 decade）。
 def _decade_of(date: Optional[str]) -> Optional[int]:
@@ -116,10 +138,6 @@ def _identity_facts(profile: CharacterProfile) -> list[str]:
         name = _display_name_of_entity(ref)
         if name:
             facts.append(f"{label}：{name}")
-    # 3A.1：主头衔（与 reignSummary 同一确定性规则，只取现任最高等级，同级稳定取一）。
-    primary = _primary_title(profile)
-    if primary:
-        facts.append(f"主头衔：{primary}")
     return facts
 
 
@@ -167,6 +185,17 @@ def _house_of(profile: CharacterProfile) -> Optional[str]:
     return str(name)
 
 
+def _dynasty_of(profile: CharacterProfile) -> Optional[str]:
+    """姓/王朝名（resolved / 非数字才写）。"""
+    d = profile.dynasty
+    if d is None:
+        return None
+    name = getattr(d, "name", None) or ""
+    if str(name).isdigit() and getattr(d, "resolved", None) is not True:
+        return None
+    return str(name)
+
+
 def _liege_name_of(profile: CharacterProfile) -> Optional[str]:
     """君主名（resolved 才写；无 → None）。"""
     lg = profile.liege
@@ -206,12 +235,11 @@ def _relative_facts(
     profile: CharacterProfile,
     unresolved_counter: list,
     max_per_group: Optional[dict[str, int]] = None,
-) -> list[CompressedRelative]:
+) -> tuple[list[CompressedRelative], dict]:
     """扩展亲属：按分类分组 + 组内确定性限量，返回（条目, 每组合计/展示计数）。
 
     全部为推断（inferred=True）；未解析数字名计入 unresolved 且不写入条目。
     组内按 id 数值升序（稳定可复现）；超限数量在返回值中如实报告，由 caller 写入 warnings。
-    limits：3A.1 每组独立上限（默认 RELATIVE_MAX_PER_GROUP 4/6/6/6/6）。
     """
     max_per_group = max_per_group or RELATIVE_MAX_PER_GROUP
     out: list[CompressedRelative] = []
@@ -283,48 +311,6 @@ def _family_facts(profile: CharacterProfile, unresolved_counter: list) -> list[s
             tag = "配偶"
         facts.append(f"{tag}：{rname}")
     return facts
-
-
-def _title_facts(profile: CharacterProfile) -> list[str]:
-    facts: list[str] = []
-    for t in profile.titles or []:
-        name = str(t.name) if t.name else str(t.titleId)
-        span = ""
-        if t.start:
-            span = f"{t.start}"
-            if t.end:
-                span += f" ~ {t.end}"
-            elif not getattr(t, "isCurrent", False):
-                span += " ~ ?"
-        tier = t.tier.value if t.tier is not None else "?"
-        facts.append(f"头衔：{name}（{tier}）{('，' + span) if span else ''}".strip())
-    return facts
-
-
-def _reign_summary(profile: CharacterProfile) -> Optional[str]:
-    """统治摘要（3A.1）：现任头衔总数 + 最高等级 + 3-5 个主要头衔（确定性）。
-
-    - 只统计 isCurrent 的头衔（与 primary_bits 同源）；
-    - 主要头衔按等级降序（同级按 titleId 稳定顺序）取前 5；
-    - 不含内部枚举 / 头衔 key / sourcePath（技术字段不入自然语言）。
-    """
-    current = [t for t in profile.titles or [] if getattr(t, "isCurrent", False)]
-    if not current:
-        return "无现任头衔"
-    ranked = sorted(
-        current,
-        key=lambda t: (
-            _TIER_RANK.get(t.tier.value if t.tier is not None else "", -1),
-            str(t.titleId),
-        ),
-        reverse=True,
-    )
-    highest = ranked[0].tier
-    tier_label = highest.value if highest is not None else "未知"
-    major = ranked[:5]
-    names = "、".join(str(t.name or t.titleId) for t in major)
-    suffix = "" if len(ranked) <= 5 else f"等共 {len(ranked)} 个头衔"
-    return f"现任 {len(ranked)} 个头衔；最高等级：{tier_label}；主要头衔：{names}{suffix}"
 
 
 def _relationship_facts(profile: CharacterProfile, unresolved_counter: list) -> list[str]:
@@ -404,6 +390,162 @@ def _select_events(
     return selected, len(events) - len(selected)
 
 
+# ---------------------------------------------------------------------------
+# v3 结构化：身份 / 世系 / 领土域 / 官职机构 / 事实
+# ---------------------------------------------------------------------------
+
+def _entity_names(refs, unresolved_counter: list) -> list[str]:
+    """实体列表 → 可读名（数字占位计入 unresolved，不编造）。"""
+    out: list[str] = []
+    for r in refs or []:
+        name = getattr(r, "name", None) or ""
+        if not name or (str(name).isdigit() and getattr(r, "resolved", None) is not True):
+            unresolved_counter[0] += 1
+            continue
+        out.append(str(name))
+    return out
+
+
+def _build_identity(profile: CharacterProfile) -> CompressedIdentity:
+    ident = CompressedIdentity(
+        displayName=profile.name or profile.id,
+        nickname=_nickname_of(profile),
+        lifeSpan=_life_span(profile),
+        deathReason=profile.deathReason,
+        traits=_trait_facts(profile),
+        sex=profile.sex.value if profile.sex is not None else None,
+        birthDate=profile.birthDate,
+        deathDate=profile.deathDate,
+    )
+    # 3C：PrimaryIdentityResolver 产出（后端注入）；缺省时回退主头衔。
+    pi = profile.identity
+    if pi is not None:
+        ident.headlineIdentity = pi.headlineIdentity
+        ident.realmStatus = pi.realmStatus.value if pi.realmStatus is not None else None
+        if pi.primaryRealmTitle is not None:
+            ident.primaryRealmTitle = str(pi.primaryRealmTitle.name or pi.primaryRealmTitle.id)
+        if pi.primaryOffice is not None:
+            ident.primaryOffice = str(pi.primaryOffice.name or pi.primaryOffice.id)
+        ident.secondaryIdentities = list(pi.secondaryIdentities or [])
+    else:
+        primary = _primary_title(profile)
+        if primary:
+            ident.primaryRealmTitle = primary
+    return ident
+
+
+def _build_territorial_domain(
+    profile: CharacterProfile, unresolved_counter: list
+) -> CompressedTerritorialDomain:
+    major = _entity_names(profile.majorTerritories, unresolved_counter)
+    if not major:
+        # 回退：现任头衔中王国/帝国级。
+        for t in profile.titles or []:
+            if getattr(t, "isCurrent", False) and t.tier is not None and t.tier.value in ("kingdom", "empire"):
+                if t.name and not t.name.isdigit():
+                    major.append(t.name)
+    minor_count = len(profile.subordinateTerritories or [])
+    gains = sum(
+        1
+        for e in profile.historicalEvents or []
+        if e.semanticType.value in ("territorial_gain", "identity_transition")
+    )
+    losses = sum(
+        1
+        for e in profile.historicalEvents or []
+        if e.semanticType.value == "territorial_loss"
+    )
+    return CompressedTerritorialDomain(
+        currentMajorTerritories=major,
+        currentMinorCount=minor_count,
+        historicalGainCount=gains,
+        historicalLossCount=losses,
+    )
+
+
+def _build_facts(
+    profile: CharacterProfile,
+    identity_facts: list[str],
+    selected_timeline: list[TimelineEvent],
+    major_territories: list[str],
+    offices: dict[str, list[str]],
+) -> list[FactRef]:
+    """3C.5：确定性事实集（BiographyChapter.factIds 引用；LLM 不得超出）。
+
+    - 身份事实（姓名/性别/出生/逝世/文化/信仰/王朝 + 身份表述）；
+    - 事件事实（每条被选中事件一条，证据 id 聚合）；
+    - 领地 / 官职 / 机构 / 宗教 / 荣誉 / 宣称事实。
+    """
+    facts: list[FactRef] = []
+    birth_ids = {e.id for e in profile.timeline if e.type.value == "birth"}
+    death_ids = {e.id for e in profile.timeline if e.type.value == "death"}
+    for i, line in enumerate(identity_facts):
+        src_events: list[str] = []
+        if "出生" in line:
+            src_events = sorted(birth_ids)
+        elif "逝世" in line or "死因" in line:
+            src_events = sorted(death_ids)
+        facts.append(
+            FactRef(
+                id=f"f-identity-{i}",
+                text=line,
+                confidence=Confidence.CONFIRMED,
+                sourceEventIds=src_events,
+            )
+        )
+    if profile.identity is not None:
+        ident = profile.identity
+        facts.append(
+            FactRef(
+                id="f-headline",
+                text=ident.headlineIdentity,
+                confidence=ident.confidence,
+                evidenceRefIds=[ev.id for ev in ident.evidence or []],
+                sourceEventIds=[ev.id for ev in ident.evidence or []],
+            )
+        )
+    for e in selected_timeline:
+        facts.append(
+            FactRef(
+                id=f"f-ev-{e.id}",
+                text=f"{e.date or '日期未知'}｜{e.title}：{_factual_summary(e)}",
+                confidence=e.confidence,
+                evidenceRefIds=[ev.id for ev in e.evidence or []],
+                sourceEventIds=[e.id],
+            )
+        )
+    for i, name in enumerate(major_territories):
+        facts.append(
+            FactRef(
+                id=f"f-territory-{i}",
+                text=f"现任主要领地：{name}",
+                confidence=Confidence.CONFIRMED,
+            )
+        )
+    for label, names in offices.items():
+        for i, name in enumerate(names):
+            facts.append(
+                FactRef(
+                    id=f"f-{label}-{i}",
+                    text=f"{label}：{name}",
+                    confidence=Confidence.CONFIRMED,
+                )
+            )
+    return facts
+
+
+def _build_narrative_constraints(profile: CharacterProfile) -> list[str]:
+    """3C：叙事约束（来自历史语义事件，如「不得推断因果」）。"""
+    constraints: list[str] = []
+    seen: set[str] = set()
+    for ev in profile.historicalEvents or []:
+        for c in ev.narrativeConstraints or []:
+            if c not in seen:
+                seen.add(c)
+                constraints.append(c)
+    return constraints
+
+
 def compress_profile(
     profile: CharacterProfile,
     *,
@@ -411,7 +553,7 @@ def compress_profile(
     include_inferred: bool,
     include_uncertain: bool,
 ) -> CompressedProfile:
-    """把 CharacterProfile 确定性压缩为 CompressedProfile。
+    """把 CharacterProfile 确定性压缩为 CompressedProfile v3。
 
     - include_inferred=False → 丢弃 inferred 事件；include_uncertain 同理。
     - max_events 为 selectedEvents 数量上限（强制保留事件优先占名额）。
@@ -461,7 +603,7 @@ def compress_profile(
             f"（max_events={max_events}）。"
         )
 
-    # v2：分类亲属（确定性限量 4/6/6/6/6，超限如实计数进 warnings）。
+    # 扩展亲属（确定性限量 4/6/6/6/6，超限如实计数进 warnings）。
     relatives, rel_stats = _relative_facts(profile, unresolved_counter)
     for kind, (total, shown) in rel_stats.items():
         limit = RELATIVE_MAX_PER_GROUP.get(kind, DEFAULT_MAX_RELATIVES_PER_GROUP)
@@ -471,38 +613,87 @@ def compress_profile(
                 f"压缩档案仅展示前 {shown} 人（max_per_group={limit}）。"
             )
 
-    # v2：君臣（liege，resolved 才写）并入关系事实块。
+    # v3 结构化身份 / 世系 / 领土域。
+    identity = _build_identity(profile)
+    dynastic = CompressedDynasticIdentity(
+        house=_house_of(profile),
+        dynasty=_dynasty_of(profile),
+    )
+    territorial = _build_territorial_domain(profile, unresolved_counter)
+
+    # 官职 / 机构 / 宗教 / 荣誉 / 宣称（3C.2 语义分类聚合，回退为空）。
+    office_field_labels = {
+        "personalOffices": "个人官职",
+        "realmInstitutions": "政权机构",
+        "religiousOffices": "宗教职务",
+        "honors": "荣誉",
+        "claims": "宣称",
+    }
+    offices = {
+        label: _entity_names(getattr(profile, field, None), unresolved_counter)
+        for field, label in office_field_labels.items()
+    }
+
+    # 家庭 / 关系 / 战争。
+    family = _family_facts(profile, unresolved_counter)
     relationship_facts = _relationship_facts(profile, unresolved_counter)
     liege_name = _liege_name_of(profile)
     if liege_name:
         relationship_facts.append(f"君主：{liege_name}（存于死亡记录）")
-
-    # 3A.1 叙事摘要（确定性，非 AI）：统治 / 战争 / 告警聚合。
-    reign_summary = _reign_summary(profile)
     war_summary = WarNarrativeNormalizer().to_text(all_events)
+
+    # 历史语义事件（3C.3；与 selectedEvents 同源过滤置信度）。
+    historical_events = [
+        ev
+        for ev in (profile.historicalEvents or [])
+        if _allowed(ev.confidence)
+    ]
+    if profile.historicalEvents and len(historical_events) < len(profile.historicalEvents):
+        warnings.append(
+            f"历史语义事件按置信度过滤：{len(profile.historicalEvents) - len(historical_events)} 条"
+            "推断/不确定事件未进入压缩档案。"
+        )
+
+    # 3C.5 事实集（确定性提炼）。
+    identity_facts = _identity_facts(profile)
+    facts = _build_facts(
+        profile,
+        identity_facts,
+        selected,
+        territorial.currentMajorTerritories,
+        offices,
+    )
+
+    narrative_constraints = _build_narrative_constraints(profile)
+    if narrative_constraints:
+        warnings.append(
+            "部分领地获得的原因存档未记录：正文不得推断继承/征服/册封等具体原因。"
+        )
+
     warning_summary = aggregate_warnings(profile.evidenceWarnings)
+    warnings.extend(warning_summary)
 
     return CompressedProfile(
         profileId=profile.id,
         displayName=profile.name or profile.id,
-        lifeSpan=_life_span(profile),
-        identityFacts=_identity_facts(profile),
-        familyFacts=_family_facts(profile, unresolved_counter),
-        titleFacts=_title_facts(profile),
-        relationshipFacts=relationship_facts,
+        identity=identity,
+        dynasticIdentity=dynastic,
+        territorialDomain=territorial,
+        personalOffices=offices["个人官职"],
+        realmInstitutions=offices["政权机构"],
+        religiousOffices=offices["宗教职务"],
+        honors=offices["荣誉"],
+        claims=offices["宣称"],
+        family=family,
+        relatives=relatives,
+        relationships=relationship_facts,
+        wars=war_summary,
+        historicalEvents=historical_events,
         selectedEvents=compressed_events,
-        omittedEventCount=omitted,
+        facts=facts,
+        narrativeConstraints=narrative_constraints,
         warnings=warnings,
         unresolvedCount=unresolved_counter[0],
         sourceEventIds=[e.eventId for e in compressed_events],
         compressionVersion=COMPRESSION_VERSION,
-        nickname=_nickname_of(profile),
-        liegeName=liege_name,
-        house=_house_of(profile),
-        deathReason=profile.deathReason,
-        traits=_trait_facts(profile),
-        relatives=relatives,
-        reignSummary=reign_summary,
-        warSummary=war_summary,
-        warningSummary=warning_summary,
     )

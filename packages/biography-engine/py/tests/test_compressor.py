@@ -35,7 +35,8 @@ def test_max_events_enforced():
     p = _busy_profile()
     cp = compress_profile(p, max_events=3, include_inferred=True, include_uncertain=True)
     assert len(cp.selectedEvents) == 3
-    assert cp.omittedEventCount == len(p.timeline) - 3
+    # v3：省略数在 warnings 中如实报告（原 omittedEventCount 字段已并入警告）。
+    assert any("省略" in w for w in cp.warnings)
 
 
 def test_birth_and_death_always_kept():
@@ -91,14 +92,14 @@ def test_include_uncertain_switch():
 
 
 def test_unresolved_digit_name_not_in_natural_language():
-    """resolved=false 且 name 为纯数字 → 不写入 relatedNames / familyFacts。"""
+    """resolved=false 且 name 为纯数字 → 不写入 relatedNames / family。"""
     p = _busy_profile()  # children 含 7777（resolved=False）
     cp = compress_profile(p, max_events=40, include_inferred=True, include_uncertain=True)
     # relatedNames 里不得出现纯数字名。
     for e in cp.selectedEvents:
         assert not any(n.isdigit() for n in e.relatedNames)
-    # familyFacts 里不得出现 7777。
-    assert not any("7777" in f for f in cp.familyFacts)
+    # family 里不得出现 7777。
+    assert not any("7777" in f for f in cp.family)
     # 但 unresolved 计数如实反映。
     assert cp.unresolvedCount >= 1
 
@@ -165,7 +166,7 @@ def _v2_profile(**kw):
     return make_profile(timeline=timeline or [ev("e1", EventType.BIRTH, "700.1.1")], **base)
 
 
-def test_v2_nickname_house_death_reason_traits():
+def test_v3_nickname_house_death_reason_traits():
     from models import EntityRef
 
     cp = compress_profile(
@@ -184,23 +185,24 @@ def test_v2_nickname_house_death_reason_traits():
         include_inferred=True,
         include_uncertain=True,
     )
-    assert cp.compressionVersion == COMPRESSION_VERSION == "2"
-    assert cp.nickname == "仁"
-    assert cp.house == "梁家族"
-    assert cp.deathReason == "death_disease"
+    assert cp.compressionVersion == COMPRESSION_VERSION == "3"
+    # v3：绰号/逝世原因/特质在结构化 identity 中。
+    assert cp.identity.nickname == "仁"
+    assert cp.dynasticIdentity.house == "梁家族"
+    assert cp.identity.deathReason == "death_disease"
     # 去重 + 数字占位名过滤。
-    assert cp.traits == ["英勇", "谦逊"]
+    assert cp.identity.traits == ["英勇", "谦逊"]
 
 
-def test_v2_liege_only_when_resolved():
-    # resolved=False 的数字名 → 不写 liegeName（不编造）。
+def test_v3_liege_only_when_resolved():
+    # resolved=False 的数字名 → 不写君主（不编造）。
     cp = compress_profile(
         _v2_profile(liege=CharacterRef(id="99", name="99", resolved=False)),
         max_events=40,
         include_inferred=True,
         include_uncertain=True,
     )
-    assert cp.liegeName is None
+    assert not any("君主：" in r for r in cp.relationships)
     # resolved=True → 写名字 + 进关系事实块。
     cp2 = compress_profile(
         _v2_profile(liege=CharacterRef(id="42", name="加吉克", resolved=True)),
@@ -208,8 +210,7 @@ def test_v2_liege_only_when_resolved():
         include_inferred=True,
         include_uncertain=True,
     )
-    assert cp2.liegeName == "加吉克"
-    assert any("君主：加吉克" in f for f in cp2.relationshipFacts)
+    assert any("君主：加吉克" in r for r in cp2.relationships)
 
 
 def test_v2_relatives_classified_and_limited():
@@ -266,7 +267,7 @@ def _current_period(title_id: str, name: str, tier, start: str, is_current: bool
     )
 
 
-def test_v2_reign_summary_counts_only_current_titles():
+def test_v3_territorial_domain_counts_only_current_realm_titles():
     from models import TitleTier
 
     titles = [
@@ -281,25 +282,21 @@ def test_v2_reign_summary_counts_only_current_titles():
         include_inferred=True,
         include_uncertain=True,
     )
-    assert cp.reignSummary is not None
-    assert "现任 3 个头衔" in cp.reignSummary
-    assert "最高等级：kingdom" in cp.reignSummary
-    # 主要头衔按等级降序（王国优先于公国/县）。
-    assert "丙王国" in cp.reignSummary
-    assert "乙公国" in cp.reignSummary
-    assert "甲县" in cp.reignSummary
-    assert "旧公国" not in cp.reignSummary  # 非现任不计入
-    # 主头衔进 identityFacts（与 reignSummary 同一规则）。
-    assert any("主头衔：丙王国" in f for f in cp.identityFacts)
+    # v3：主要领地 = 现任王国/帝国级（k_c 丙王国）。
+    assert cp.territorialDomain.currentMajorTerritories == ["丙王国"]
+    # 非现任不计入。
+    assert "旧公国" not in cp.territorialDomain.currentMajorTerritories
+    # 主头衔进 identity.primaryRealmTitle（与 territorialDomain 同一规则）。
+    assert cp.identity.primaryRealmTitle == "丙王国"
 
 
-def test_v2_reign_summary_empty_when_no_titles():
+def test_v3_territorial_domain_empty_when_no_titles():
     cp = compress_profile(_v2_profile(), max_events=40, include_inferred=True, include_uncertain=True)
-    assert cp.reignSummary == "无现任头衔"
-    assert not any("主头衔：" in f for f in cp.identityFacts)
+    assert cp.territorialDomain.currentMajorTerritories == []
+    assert cp.identity.primaryRealmTitle is None
 
 
-def test_v2_war_summary_normalized():
+def test_v3_war_summary_normalized():
     from models import CharacterRef, Confidence, TimelineEvent
 
     def w_ev(eid, title, date, opp):
@@ -326,13 +323,13 @@ def test_v2_war_summary_normalized():
         include_inferred=True,
         include_uncertain=True,
     )
-    assert cp.warSummary == [
+    assert cp.wars == [
         "950.1.1 卷入一场防御战争，对方：入侵者。",
         "952.8.16 赢得一场战争，对手：梁某。",
     ]
 
 
-def test_v2_warning_summary_aggregated_and_sanitized():
+def test_v3_warning_summary_aggregated_and_sanitized():
     from models import CharacterProfile, EvidenceWarning, WarningSeverity
 
     profile = CharacterProfile(
@@ -361,9 +358,9 @@ def test_v2_warning_summary_aggregated_and_sanitized():
         include_inferred=True,
         include_uncertain=True,
     )
-    assert len(cp.warningSummary) == 1
-    assert "× 2" in cp.warningSummary[0]
+    # v3：聚合告警并入 warnings（仍按 code 聚合 + 脱敏）。
+    assert any("× 2" in w for w in cp.warnings)
     # 技术字段不进聚合结果。
-    assert "d_xiyuan" not in cp.warningSummary[0]
-    assert "20423" not in cp.warningSummary[0]
-    assert "landed_titles" not in cp.warningSummary[0]
+    assert not any("d_xiyuan" in w for w in cp.warnings)
+    assert not any("20423" in w for w in cp.warnings)
+    assert not any("landed_titles" in w for w in cp.warnings)

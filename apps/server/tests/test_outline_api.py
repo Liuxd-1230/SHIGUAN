@@ -29,10 +29,13 @@ class EchoOutlineProvider(FakeLlmProvider):
     """从 user_prompt 的事件 id 列表确定性构建合法提纲（每事件一章，按时间序）。
 
     事件列表在 prompt 中按日期升序（compressor 保证）→ 章节自然满足时间顺序约束。
+    只提取「## 事件（id 列表）」小节（3C.5 事实区的 [f-xxx] 不是事件 id）。
     """
 
     def generate_json(self, **kw) -> dict:
-        ids = re.findall(r"\[([a-zA-Z0-9_.-]+)\]", kw["user_prompt"])
+        m_block = re.search(r"## 事件（id 列表）\n(.*?)(?=\n## |\Z)", kw["user_prompt"], re.S)
+        block = m_block.group(1) if m_block else kw["user_prompt"]
+        ids = re.findall(r"\[([a-zA-Z0-9_.-]+)\]", block)
         chapters = [
             {
                 "id": f"c{i}",

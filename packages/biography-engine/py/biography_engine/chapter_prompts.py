@@ -1,8 +1,9 @@
-"""版本化章节正文 Prompt（Phase 3B 第 6 步）。
+"""版本化章节正文 Prompt（Phase 3B 第 6 步，Phase 3C.4 统一 v3 输入）。
 
 正文按章节逐次调用模型：user_prompt 只含
-  - 压缩档案（身份/家庭/头衔/关系/亲属/统治/战争/告警摘要）；
-  - **本章允许的事件**（把 `compressed.selectedEvents` 过滤到 `chapter.eventIds`）。
+  - 压缩档案 v3（NarrativeSummaryBuilder 确定性史料摘要）；
+  - **本章允许的事件**（把 `compressed.selectedEvents` 过滤到 `chapter.eventIds`）；
+  - **本章可用事实**（3C.5：身份事实 + 本章事件锚定的事实，供 factIds 校验）。
 绝不传入：其他章节允许的事件、原始 .ck3 / melted.txt / 完整人物库 / 本地绝对路径 / API Key。
 """
 from __future__ import annotations
@@ -14,19 +15,12 @@ from typing import List
 from models import BiographyChapterOutline, BiographyStyle
 
 from .models import CompressedProfile
-from .prompt_builder import (
-    _events_block,
-    _fact_block,
-    _identity_extra_block,
-    _relative_block,
-    _STYLE_LABELS,
-    _summary_blocks,
-    load_system_prompt,
-)
+from .narrative_summary import NarrativeSummaryBuilder
+from .prompt_builder import _events_block, _facts_block, _summary_block, _STYLE_LABELS, load_system_prompt
 
 # 版本号即文件名（升级 prompt 就换新文件 + 新常量）。
-CHAPTER_PROMPT_VERSION = "biography-chapter.zh-Hans.v1"
-_CHAPTER_PROMPT_RESOURCE = "prompts/biography-chapter.zh-Hans.v1.txt"
+CHAPTER_PROMPT_VERSION = "biography-chapter.zh-Hans.v2"
+_CHAPTER_PROMPT_RESOURCE = "prompts/biography-chapter.zh-Hans.v2.txt"
 
 # 单章输出 Schema（与 save-schema 的 BiographyChapter 对应）。
 CHAPTER_JSON_SCHEMA: dict = {
@@ -53,27 +47,44 @@ def load_chapter_system_prompt() -> str:
     return text.strip()
 
 
+def facts_for_chapter(
+    compressed: CompressedProfile, event_ids: List[str]
+) -> list:
+    """本章可用事实（3C.5 确定性回填规则，与 BiographyGenerator 一致）。
+
+    - 身份事实（f-identity-* / f-headline）：所有章节共用；
+    - 事件锚定事实（f-ev-*）：仅覆盖本章 eventIds 的事件。
+    返回按 (是否身份, id) 稳定排序的 FactRef 列表。
+    """
+    allowed = set(event_ids)
+    out = []
+    identity = []
+    for f in compressed.facts:
+        if f.id == "f-headline" or f.id.startswith("f-identity-"):
+            identity.append(f)
+        elif any(eid in allowed for eid in (f.sourceEventIds or [])):
+            out.append(f)
+    identity.sort(key=lambda f: f.id)
+    out.sort(key=lambda f: f.id)
+    return identity + out
+
+
 def build_chapter_prompts(
     compressed: CompressedProfile,
     chapter_outline: BiographyChapterOutline,
     style: BiographyStyle,
 ) -> tuple[str, str]:
-    """返回 (system_prompt, user_prompt)。user_prompt 只含该章允许的事件。"""
+    """返回 (system_prompt, user_prompt)。user_prompt 只含该章允许的事件与事实。"""
     allowed = set(chapter_outline.eventIds)
     chapter_events = [e for e in compressed.selectedEvents if e.eventId in allowed]
+    chapter_facts = facts_for_chapter(compressed, chapter_outline.eventIds)
     style_label = _STYLE_LABELS.get(style, style.value)
 
     user_parts = [
         "# 人物压缩档案（唯一事实来源，不得超出此范围）",
         f"人物：{compressed.displayName}（id={compressed.profileId}）",
-        f"生卒：{compressed.lifeSpan or '未知'}",
-        _fact_block("身份", compressed.identityFacts),
-        _identity_extra_block(compressed),
-        _fact_block("家庭", compressed.familyFacts),
-        _fact_block("头衔", compressed.titleFacts),
-        _fact_block("关系", compressed.relationshipFacts),
-        _relative_block(compressed.relatives),
-        *_summary_blocks(compressed),
+        _summary_block(compressed),
+        _facts_block(chapter_facts),
         "",
         "# 本章任务",
         f"章节：{chapter_outline.id}《{chapter_outline.title}》",
@@ -88,6 +99,7 @@ def build_chapter_prompts(
         "inferred（推断）内容必须带「据推断/可能」措辞；防御战争写「卷入/抵御」，绝不写「宣战」。",
         "正文不得出现：数字人物 id、tXXXX、存档路径、内部枚举（如 title_gain）、"
         "JSON/schema/prompt 等元信息、markdown 标记。",
+        "必须遵守「叙事约束」：头衔获得原因存档未记录时，不得写成继承/征服/册封。",
         "输出必须符合 JSON Schema；eventIds 必须来自本章允许事件（可保留全部或子集，不得为空）。",
         json.dumps(CHAPTER_JSON_SCHEMA, ensure_ascii=False, indent=2),
     ]
