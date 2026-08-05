@@ -28,6 +28,8 @@ target/
 *.sav
 *.bin
 data/
+# Phase 3C-Audit：审计原始数据（melted 文本 / 对照 JSON / 报告），绝不分发
+data/audit/
 *.db
 *.sqlite
 *.sqlite3
