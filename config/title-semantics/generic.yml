@@ -1,0 +1,16 @@
+# SHIGUAN —— Mod 无关的安全语义规则（Phase 3C.2）
+#
+# 本文件只收录「对任何 Mod 环境都安全」的结构性规则：
+#   - 不以特定 Mod 的命名习惯作依据；
+#   - 只按 CK3 通用结构（键前缀 / 层级）判定；
+#   - 命中即 confirmed；拿不准的一律留给启发式（inferred）或 mods/ 层。
+#
+# 特定 Mod 的规则（如某 Mod 的 e_minister_* 政权机构）**必须**放 mods/ 目录，
+# 并按 Mod 标识或标题结构签名匹配 —— 否则会污染其他存档环境。
+version: 1
+rules:
+  # 无地家族身份头衔：x_nf_ 在多数 Mod 中都被用来承载家族/世系名
+  # （本规则与 base-game 的 vanilla_x_family 等价，仅作为 generic 层锚点）。
+  - id: generic_x_family
+    match: { prefix: "x_nf_" }
+    classify: { semantic_type: dynasty_identity, confidence: confirmed }

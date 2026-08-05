@@ -306,6 +306,22 @@ export interface CharacterProfile {
   travels: LifeEvent[];
   memories: LifeEvent[];
 
+  /** 3C：头衔语义分类（titleId -> 分类；仅包含该人物出现过的头衔）。 */
+  titleClassifications?: Record<string, TitleClassification>;
+  /** 3C：主要身份（headline / realmStatus / primaryRealmTitle …）。 */
+  identity?: CharacterIdentity;
+  /** 3C：现任个人官职 / 政权机构 / 宗教职务 / 荣誉 / 宣称（按语义分类聚合）。 */
+  personalOffices?: EntityRef[];
+  realmInstitutions?: EntityRef[];
+  religiousOffices?: EntityRef[];
+  honors?: EntityRef[];
+  claims?: EntityRef[];
+  /** 3C：现任主要领地（主权/领地王国以上）与从属领地（伯/男爵领）。 */
+  majorTerritories?: EntityRef[];
+  subordinateTerritories?: EntityRef[];
+  /** 3C：历史语义事件（同日大量 title 变更按语义类型拆分；不推断因果）。 */
+  historicalEvents?: HistoricalSemanticEvent[];
+
   /** 经过排序/合并/压缩、准备呈现与喂给模型的时间线。 */
   timeline: TimelineEvent[];
   /** 证据层面的告警与不确定项。 */
@@ -338,6 +354,9 @@ export interface CharacterSummary {
   isPlayerDynasty: boolean;
   portraitKey?: string;
   evidenceWarningCount: number;
+  /** 3C：主要身份表述（PrimaryIdentityResolver 确定性产出；无法判定时缺省）。 */
+  headlineIdentity?: string;
+  realmStatus?: RealmStatus;
 }
 
 /** 索引条目与摘要同形。 */
@@ -371,6 +390,10 @@ export interface BiographyChapter {
   content: string;
   /** 本章正文所追溯的时间线事件 id。 */
   eventIds: string[];
+  /** 3C.5：本章正文所依赖的事实 id（确定性回填）。 */
+  factIds?: string[];
+  /** 3C.5：本章正文中的确定性主张（经 FactChecker 校验）。 */
+  claims?: string[];
 }
 
 export type BiographyStyle =
@@ -396,7 +419,122 @@ export interface FactCheckResult {
 }
 
 /**
- * 人物主头衔判定状态（P0：顶部头衔与 titles 列表同源后区分三种诚实降级）。
+ * 头衔语义分类（Phase 3C.2，12 类）。
+ * 由确定性规则判定（config/title-semantics + 键前缀/层级/封臣结构启发式），不由 LLM 分类。
+ * 与 tier 解耦：tier 只是技术属性，语义决定叙事写法。
+ */
+export type TitleSemanticType =
+  | "sovereign_realm_title" // 独立王国/帝国（顶层，liege=None）
+  | "territorial_realm_title" // 作为封臣领有的王国/公国/伯爵领等封地
+  | "subordinate_territory" // 从属领地（伯/男爵领，隶属上级领地）
+  | "personal_office" // 个人官职
+  | "realm_institution" // 政权机构（政事堂/御史台等）
+  | "religious_office" // 宗教职务
+  | "dynasty_identity" // 家族/世系身份头衔
+  | "honorary_title" // 荣誉头衔（无实权）
+  | "temporary_title" // 临时性头衔（营地/居留等）
+  | "claim_only" // 仅拥宣称（存档无法直接证明时不得虚构）
+  | "special_mod_title" // 特定 Mod 明确命名、无法按基座规则归类
+  | "unknown"; // 无法确认，诚实留空
+
+/** 人物当前的身份地位（Phase 3C.2，由现任头衔结构确定性推导）。 */
+export type RealmStatus =
+  | "independent_ruler"
+  | "vassal_ruler"
+  | "landless_official"
+  | "religious_leader"
+  | "regent"
+  | "adventurer"
+  | "courtier"
+  | "former_ruler"
+  | "prisoner"
+  | "unknown";
+
+/** 历史语义事件类型（Phase 3C.3，14 类；同日大量 title 变更按语义类型拆分）。 */
+export type HistoricalSemanticEventType =
+  | "identity_transition"
+  | "territorial_gain"
+  | "territorial_loss"
+  | "office_appointment"
+  | "office_dismissal"
+  | "institution_transition"
+  | "religious_appointment"
+  | "religious_dismissal"
+  | "claim_gained"
+  | "claim_lost"
+  | "honor_granted"
+  | "honor_revoked"
+  | "realm_created"
+  | "realm_destroyed";
+
+/** 领土/头衔获得原因（Phase 3C.3；除 created 可直接证实外一律 unknown，不推断因果）。 */
+export type AcquisitionCause =
+  | "inheritance"
+  | "grant"
+  | "conquest"
+  | "usurpation"
+  | "creation"
+  | "election"
+  | "marriage"
+  | "faction"
+  | "administrative_transfer"
+  | "purchase"
+  | "unknown";
+
+/** 单条头衔的语义分类结果（Phase 3C.2）。 */
+export interface TitleClassification {
+  titleId: string;
+  semanticType: TitleSemanticType;
+  confidence: Confidence;
+  /** 展示名（TitleDisplayResolver：存档直书 → 本地化 → def → 原 key 回退）。 */
+  displayName: string;
+  tier?: TitleTier;
+  /** 判据（key_prefix / tier / de_facto_liege / name …）与来源规则。 */
+  signals?: string[];
+  warnings?: string[];
+  sourceRule?: string;
+}
+
+/** 人物主要身份（Phase 3C.2 PrimaryIdentityResolver 确定性产出）。 */
+export interface CharacterIdentity {
+  headlineIdentity: string;
+  realmStatus: RealmStatus;
+  primaryRealmTitle?: EntityRef;
+  primaryOffice?: EntityRef;
+  /** 次要看点（多主权领地的其余领地、兼任机构等），确定性文案。 */
+  secondaryIdentities?: string[];
+  confidence: Confidence;
+  warnings?: string[];
+  evidence: EvidenceRef[];
+}
+
+/** 历史语义事件（Phase 3C.3 HistoricalEventSemanticBuilder 产出）。 */
+export interface HistoricalSemanticEvent {
+  eventId: string;
+  semanticType: HistoricalSemanticEventType;
+  date?: string;
+  summary: string;
+  relatedTitleIds?: string[];
+  relatedEntityIds?: string[];
+  confidence: Confidence;
+  evidence: EvidenceRef[];
+  sourceEventIds?: string[];
+  warnings?: string[];
+  /** 叙事约束（如「存档未记录获得途径，不得推断继承/征服/册封」）。 */
+  narrativeConstraints?: string[];
+  acquisitionCause?: AcquisitionCause;
+}
+
+/** 一条可独立核验的事实（Phase 3C.5；确定性提炼，不是模型产出）。 */
+export interface FactRef {
+  id: string;
+  text: string;
+  confidence: Confidence;
+  evidenceRefIds?: string[];
+  sourceEventIds?: string[];
+}
+
+/** 人物主头衔判定状态（P0：顶部头衔与 titles 列表同源后区分三种诚实降级）。
  * - resolved：有现任头衔且主头衔可确定；
  * - no_titles：确认无现任头衔（titles 列表为空）；
  * - tier_unknown：持有现任头衔但等级未知，主头衔无法可靠判定；
@@ -419,6 +557,8 @@ export interface Biography {
   factCheck?: FactCheckResult;
   /** 任一时点使用的压缩后档案指纹，便于复现。 */
   profileDigest?: string;
+  /** 3C.5：全文所用的事实集（确定性提炼）。 */
+  facts?: FactRef[];
 }
 
 // ----------------------------------------------------------------------------

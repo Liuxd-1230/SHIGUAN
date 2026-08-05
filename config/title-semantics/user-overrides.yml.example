@@ -1,0 +1,21 @@
+# SHIGUAN —— 用户私有头衔语义覆盖规则（Phase 3C.2）
+#
+# 本文件是「user overrides」层，优先级最高（user > mods > generic > base > 启发式）。
+# 用途：
+#   - 修正某个头衔在你本地存档里的语义（例如某 Mod 把 d_foo 做成官职）；
+#   - 覆盖基座规则对某个特殊头衔的分类。
+#
+# 注意：
+#   - 本文件被 .gitignore 忽略，不会随仓库分发（内容可能包含你的 Mod 命名细节）；
+#   - 复制为 user-overrides.yml 后填写你的规则；
+#   - match 条件全部 AND；首个命中的规则生效。
+#
+# 示例：
+# rules:
+#   - id: my_mod_office
+#     match:
+#       prefix: "d_my_mod_office"
+#     classify:
+#       semantic_type: personal_office
+#       confidence: confirmed
+rules: []

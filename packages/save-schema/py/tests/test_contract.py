@@ -22,11 +22,13 @@ import pytest
 from pydantic import ValidationError
 
 from models import (  # noqa: E402
+    AcquisitionCause,
     Biography,
     BiographyChapter,
     BiographyChapterOutline,
     BiographyOutline,
     BiographyStyle,
+    CharacterIdentity,
     CharacterIndexEntry,
     CharacterRef,
     CharacterProfile,
@@ -46,7 +48,10 @@ from models import (  # noqa: E402
     FactCheckIssue,
     FactCheckResult,
     FactCheckStatus,
+    FactRef,
     FixtureEnvelope,
+    HistoricalSemanticEvent,
+    HistoricalSemanticEventType,
     LifeEvent,
     MissingComponent,
     MockDataset,
@@ -54,13 +59,16 @@ from models import (  # noqa: E402
     ParsedSave,
     ParsedSaveMeta,
     PositionPeriod,
+    RealmStatus,
     RelationshipPeriod,
     RelationshipType,
     ResidencePeriod,
     SaveInspection,
     SaveKind,
     Sex,
+    TitleClassification,
     TitlePeriod,
+    TitleSemanticType,
     TitleTier,
     TitleStatus,
     TimelineEvent,
@@ -517,3 +525,176 @@ def test_token_source_info_roundtrip():
     assert info2.kind == TokenSourceKind.PLACEHOLDER
     assert info2.enumResolved is False
     assert info2.compatibility == TokenCompatibility.PARTIAL
+
+
+# ---------------------------------------------------------------------------
+# Phase 3C：历史语义层契约（头衔语义 / 身份 / 历史语义事件 / 事实引用）
+# ---------------------------------------------------------------------------
+
+def test_title_semantic_type_enum_values():
+    values = [t.value for t in TitleSemanticType]
+    assert values == [
+        "sovereign_realm_title",
+        "territorial_realm_title",
+        "subordinate_territory",
+        "personal_office",
+        "realm_institution",
+        "religious_office",
+        "dynasty_identity",
+        "honorary_title",
+        "temporary_title",
+        "claim_only",
+        "special_mod_title",
+        "unknown",
+    ]
+
+
+def test_realm_status_enum_values():
+    values = [s.value for s in RealmStatus]
+    assert "independent_ruler" in values
+    assert "vassal_ruler" in values
+    assert "landless_official" in values
+    assert "former_ruler" in values
+    assert "unknown" in values
+    assert len(values) == 10
+
+
+def test_historical_semantic_event_type_enum_values():
+    values = [e.value for e in HistoricalSemanticEventType]
+    assert len(values) == 14
+    assert "territorial_gain" in values
+    assert "office_appointment" in values
+    assert "institution_transition" in values
+    assert "identity_transition" in values
+
+
+def test_acquisition_cause_enum_values():
+    values = [c.value for c in AcquisitionCause]
+    assert "creation" in values
+    assert "unknown" in values
+    assert len(values) == 11
+
+
+def test_title_classification_roundtrip():
+    tc = TitleClassification(
+        titleId="k_dali",
+        semanticType=TitleSemanticType.SOVEREIGN_REALM_TITLE,
+        confidence=Confidence.CONFIRMED,
+        displayName="大理",
+        tier=TitleTier.KINGDOM,
+        signals=["key_prefix", "de_facto_liege"],
+        sourceRule="base-game.yml:vanilla_landed_k",
+    )
+    dumped = tc.model_dump(mode="json")
+    tc2 = TitleClassification.model_validate(dumped)
+    assert tc2.semanticType == TitleSemanticType.SOVEREIGN_REALM_TITLE
+    assert tc2.displayName == "大理"
+    assert tc2.sourceRule == "base-game.yml:vanilla_landed_k"
+
+
+def test_character_identity_roundtrip():
+    ident = CharacterIdentity(
+        headlineIdentity="大理的最高统治者",
+        realmStatus=RealmStatus.INDEPENDENT_RULER,
+        primaryRealmTitle=EntityRef(id="k_dali", name="大理", type="title"),
+        secondaryIdentities=["安南的最高统治者"],
+        confidence=Confidence.CONFIRMED,
+        evidence=[
+            EvidenceRef(
+                id="ev1",
+                sourceType="title",
+                description="landed_titles 顶层 holder",
+                confidence=Confidence.CONFIRMED,
+            )
+        ],
+    )
+    dumped = ident.model_dump(mode="json")
+    ident2 = CharacterIdentity.model_validate(dumped)
+    assert ident2.realmStatus == RealmStatus.INDEPENDENT_RULER
+    assert ident2.primaryRealmTitle.name == "大理"
+    assert ident2.headlineIdentity == "大理的最高统治者"
+
+
+def test_historical_semantic_event_roundtrip():
+    ev = HistoricalSemanticEvent(
+        eventId="p1-1-title-gain-952.8.16",
+        semanticType=HistoricalSemanticEventType.TERRITORIAL_GAIN,
+        date="952.8.16",
+        summary="梁某 于 952.8.16 获得以下领地：大理、安南。",
+        relatedTitleIds=["k_dali", "k_viet"],
+        confidence=Confidence.CONFIRMED,
+        sourceEventIds=["p1-title-gain-952.8.16"],
+        narrativeConstraints=["存档未记录获得途径，不得推断继承/征服/册封。"],
+        acquisitionCause=AcquisitionCause.UNKNOWN,
+    )
+    dumped = ev.model_dump(mode="json")
+    ev2 = HistoricalSemanticEvent.model_validate(dumped)
+    assert ev2.semanticType == HistoricalSemanticEventType.TERRITORIAL_GAIN
+    assert ev2.acquisitionCause == AcquisitionCause.UNKNOWN
+    assert ev2.date == "952.8.16"
+
+
+def test_fact_ref_roundtrip():
+    fact = FactRef(
+        id="f1",
+        text="梁某 于 952.8.16 成为「大理」的持有者。",
+        confidence=Confidence.CONFIRMED,
+        evidenceRefIds=["p1-k_dali-952.8.16-ev"],
+        sourceEventIds=["p1-title-gain-952.8.16"],
+    )
+    dumped = fact.model_dump(mode="json")
+    fact2 = FactRef.model_validate(dumped)
+    assert fact2.id == "f1"
+    assert fact2.confidence == Confidence.CONFIRMED
+
+
+def test_profile_3c_fields_roundtrip():
+    p = _minimal_profile("p1", "梁克贞")
+    p.titleClassifications = {
+        "k_dali": TitleClassification(
+            titleId="k_dali",
+            semanticType=TitleSemanticType.SOVEREIGN_REALM_TITLE,
+            confidence=Confidence.CONFIRMED,
+            displayName="大理",
+        )
+    }
+    p.identity = CharacterIdentity(
+        headlineIdentity="大理的最高统治者",
+        realmStatus=RealmStatus.INDEPENDENT_RULER,
+        primaryRealmTitle=EntityRef(id="k_dali", name="大理", type="title"),
+        confidence=Confidence.CONFIRMED,
+        evidence=[],
+    )
+    p.personalOffices = [EntityRef(id="e_minister_li", name="吏部尚书", type="title")]
+    p.realmInstitutions = [EntityRef(id="e_minister_shizheng", name="政事堂", type="title")]
+    p.majorTerritories = [EntityRef(id="k_dali", name="大理", type="title")]
+    dumped = p.model_dump(mode="json")
+    p2 = CharacterProfile.model_validate(dumped)
+    assert p2.identity.realmStatus == RealmStatus.INDEPENDENT_RULER
+    assert p2.titleClassifications["k_dali"].displayName == "大理"
+    assert p2.realmInstitutions[0].name == "政事堂"
+    assert p2.personalOffices[0].id == "e_minister_li"
+
+
+def test_chapter_fact_ids_and_biography_facts():
+    ch = BiographyChapter(id="c1", title="早年", content="生于大理。", eventIds=["p1-birth"])
+    ch.factIds = ["f1"]
+    ch.claims = ["梁克贞出生于大理。"]
+    bio = Biography(
+        profileId="p1",
+        style=BiographyStyle.SERIOUS_BIOGRAPHY,
+        chapters=[ch],
+        generatedAt="2026-01-01T00:00:00Z",
+        modelName="fake",
+        facts=[
+            FactRef(
+                id="f1",
+                text="梁克贞出生于大理。",
+                confidence=Confidence.CONFIRMED,
+            )
+        ],
+    )
+    dumped = bio.model_dump(mode="json")
+    bio2 = Biography.model_validate(dumped)
+    assert bio2.chapters[0].factIds == ["f1"]
+    assert bio2.facts[0].id == "f1"

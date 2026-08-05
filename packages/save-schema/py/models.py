@@ -182,6 +182,87 @@ class TokenCompatibility(str, Enum):
     EXTERNAL_MISSING = "external_missing"
 
 
+class TitleSemanticType(str, Enum):
+    """头衔语义分类（Phase 3C.2，12 类）。
+
+    分类依据为「该头衔对持有者的语义角色」，由确定性规则（config/title-semantics/
+    规则注册表 + 键前缀/层级/封臣结构启发式）判定，**不**由 LLM 自行分类。
+    与 tier（barony…empire）解耦：tier 只是技术属性，语义决定叙事写法。
+    """
+    SOVEREIGN_REALM_TITLE = "sovereign_realm_title"      # 独立王国/帝国（顶层，liege=None）
+    TERRITORIAL_REALM_TITLE = "territorial_realm_title"  # 作为封臣领有的王国/公国/伯爵领等封地
+    SUBORDINATE_TERRITORY = "subordinate_territory"      # 从属领地（伯/男爵领，隶属上级领地）
+    PERSONAL_OFFICE = "personal_office"                  # 个人官职（某人担任的职务头衔）
+    REALM_INSTITUTION = "realm_institution"              # 政权机构（朝廷常设机构，如政事堂/御史台）
+    RELIGIOUS_OFFICE = "religious_office"                # 宗教职务（教宗/大主教等）
+    DYNASTY_IDENTITY = "dynasty_identity"                # 家族/世系身份头衔（如 x_nf_ 家族名）
+    HONORARY_TITLE = "honorary_title"                    # 荣誉头衔（无实权）
+    TEMPORARY_TITLE = "temporary_title"                  # 临时性头衔（营地/居留等）
+    CLAIM_ONLY = "claim_only"                            # 仅拥宣称、未实际持有（存档无法直接证明时不得虚构）
+    SPECIAL_MOD_TITLE = "special_mod_title"              # 特定 Mod 明确命名、无法按基座规则归类
+    UNKNOWN = "unknown"                                  # 无法确认，诚实留空
+
+
+class RealmStatus(str, Enum):
+    """人物当前的身份地位（Phase 3C.2，由现任头衔结构确定性推导）。
+
+    只依据存档可证的现任头衔/君主/官职结构判定；无法判定时为 unknown，
+    绝不把「无现任头衔」一律写成平民（还可能是前任君主/官员）。
+    """
+    INDEPENDENT_RULER = "independent_ruler"  # 独立最高统治者（持有 liege=None 的王国/帝国等）
+    VASSAL_RULER = "vassal_ruler"            # 封臣统治者（作为他人封臣持有领地）
+    LANDLESS_OFFICIAL = "landless_official"  # 无地官员（持官职但无领地）
+    RELIGIOUS_LEADER = "religious_leader"    # 宗教领袖
+    REGENT = "regent"                        # 摄政
+    ADVENTURER = "adventurer"                # 冒险者（无地）
+    COURTIER = "courtier"                    # 廷臣（无头衔无领地）
+    FORMER_RULER = "former_ruler"            # 前统治者（无现任头衔，但存有历史任期）
+    PRISONER = "prisoner"                    # 囚犯
+    UNKNOWN = "unknown"                      # 无法判定，诚实留空
+
+
+class HistoricalSemanticEventType(str, Enum):
+    """历史语义事件类型（Phase 3C.3，14 类）。
+
+    「同日大量 title 变更」按语义类型拆分（一次征服获多地、一日授多官不再
+    混为一条），由 HistoricalEventSemanticBuilder 确定性生成，**不**推断因果。
+    """
+    IDENTITY_TRANSITION = "identity_transition"      # 身份转变（成为某主权领地的最高统治者）
+    TERRITORIAL_GAIN = "territorial_gain"            # 获得领地
+    TERRITORIAL_LOSS = "territorial_loss"            # 失去领地
+    OFFICE_APPOINTMENT = "office_appointment"        # 就任个人官职
+    OFFICE_DISMISSAL = "office_dismissal"            # 卸任个人官职
+    INSTITUTION_TRANSITION = "institution_transition"  # 政权机构任职变化（就任/离任）
+    RELIGIOUS_APPOINTMENT = "religious_appointment"  # 出任宗教职务
+    RELIGIOUS_DISMISSAL = "religious_dismissal"      # 卸任宗教职务
+    CLAIM_GAINED = "claim_gained"                    # 获得宣称
+    CLAIM_LOST = "claim_lost"                        # 失去宣称
+    HONOR_GRANTED = "honor_granted"                  # 获授荣誉
+    HONOR_REVOKED = "honor_revoked"                  # 荣誉被剥夺
+    REALM_CREATED = "realm_created"                  # 领地被创建（history kind=created）
+    REALM_DESTROYED = "realm_destroyed"              # 领地被消灭（history kind=destroyed）
+
+
+class AcquisitionCause(str, Enum):
+    """领土/头衔获得原因（Phase 3C.3）。
+
+    存档 titles.json 只记录 holder 变更（kind=created/holder/other），**没有**
+    战争→头衔、继承→头衔的关联字段。除 kind=created 可直接证实的「创建」外，
+    一律 unknown，绝不因时间相近而推断继承/征服/册封等因果。
+    """
+    INHERITANCE = "inheritance"                  # 继承（暂无字段直接证实，仅保留枚举位）
+    GRANT = "grant"                              # 册封/赐予
+    CONQUEST = "conquest"                        # 征服
+    USURPATION = "usurpation"                    # 篡位
+    CREATION = "creation"                        # 创建（history kind=created 可直接证实）
+    ELECTION = "election"                        # 选举
+    MARRIAGE = "marriage"                        # 联姻取得
+    FACTION = "faction"                          # 派系拥立
+    ADMINISTRATIVE_TRANSFER = "administrative_transfer"  # 行政转移
+    PURCHASE = "purchase"                        # 购买
+    UNKNOWN = "unknown"                          # 存档未记录，诚实留空
+
+
 # ---------------------------------------------------------------------------
 # 值对象
 # ---------------------------------------------------------------------------
@@ -336,6 +417,82 @@ class EvidenceWarning(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 历史语义层（Phase 3C：头衔语义分类 / 身份判定 / 历史语义事件 / 事实引用）
+# ---------------------------------------------------------------------------
+
+class TitleClassification(BaseModel):
+    """单条头衔的语义分类结果（Phase 3C.2）。
+
+    由确定性规则判定（不涉及 LLM）：semanticType 决定叙事角色（主权/领地/官职/
+    机构/宗教/家族/荣誉/临时/Mod 类），与 tier 解耦。signals 记录判据
+    （key_prefix / tier / de_facto_liege / name 等），warnings 记录降级与不确定性。
+    """
+    titleId: str
+    semanticType: TitleSemanticType
+    confidence: Confidence
+    # 展示名（TitleDisplayResolver 产出：存档直书 → 本地化 → def → 原 key 回退）。
+    displayName: str
+    tier: Optional[TitleTier] = None
+    # 判据与来源规则（如 base-game.yml:vanilla_landed_k、heuristic:liege_adjust）。
+    signals: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    sourceRule: Optional[str] = None
+
+
+class CharacterIdentity(BaseModel):
+    """人物主要身份（Phase 3C.2 PrimaryIdentityResolver 确定性产出）。
+
+    headlineIdentity 是人物页标题下的主要身份表述（基于头衔**语义**与
+    **游戏原生展示名**，绝不按 tier 硬编码为男爵/伯爵/公爵/国王/皇帝）。
+    realmStatus 由现任头衔结构判定；无法判定时 unknown（诚实留空）。
+    """
+    headlineIdentity: str
+    realmStatus: RealmStatus
+    primaryRealmTitle: Optional[EntityRef] = None
+    primaryOffice: Optional[EntityRef] = None
+    # 次要看点（如多主权领地的其余领地、兼任的机构等），均为确定性文案。
+    secondaryIdentities: List[str] = Field(default_factory=list)
+    confidence: Confidence
+    warnings: List[str] = Field(default_factory=list)
+    evidence: List[EvidenceRef] = Field(default_factory=list)
+
+
+class HistoricalSemanticEvent(BaseModel):
+    """历史语义事件（Phase 3C.3 HistoricalEventSemanticBuilder 产出）。
+
+    把 title_gain/loss 等原始记录按语义类型重组（同日多地获得→territorial_gain、
+    同日多官→office_appointment 等分开），供时间线聚合与 LLM 输入。
+    sourceEventIds 指向原始 TimelineEvent.id 以便追溯。
+    """
+    eventId: str
+    semanticType: HistoricalSemanticEventType
+    date: Optional[str] = None
+    summary: str
+    relatedTitleIds: List[str] = Field(default_factory=list)
+    relatedEntityIds: List[str] = Field(default_factory=list)
+    confidence: Confidence
+    evidence: List[EvidenceRef] = Field(default_factory=list)
+    sourceEventIds: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    # 叙事约束（如「存档未记录获得途径，不得推断继承/征服/册封」）。
+    narrativeConstraints: List[str] = Field(default_factory=list)
+    acquisitionCause: Optional[AcquisitionCause] = None
+
+
+class FactRef(BaseModel):
+    """一条可独立核验的事实（Phase 3C.5）。
+
+    事实由确定性代码从存档证据提炼（不是模型产出）：含置信度与证据引用链。
+    BiographyChapter.factIds 引用这些事实 id；FactChecker 校验正文与事实一致。
+    """
+    id: str
+    text: str
+    confidence: Confidence
+    evidenceRefIds: List[str] = Field(default_factory=list)
+    sourceEventIds: List[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
 # 标准人物档案（原始数据层）
 # ---------------------------------------------------------------------------
 
@@ -377,6 +534,23 @@ class CharacterProfile(BaseModel):
     travels: List[LifeEvent] = Field(default_factory=list)
     memories: List[LifeEvent] = Field(default_factory=list)
 
+    # ---- Phase 3C：历史语义层（由确定性规则产出，不涉及 LLM）----
+    # 头衔语义分类（titleId -> 分类；仅包含该人物出现过的头衔）。
+    titleClassifications: Dict[str, TitleClassification] = Field(default_factory=dict)
+    # 主要身份（headline / realmStatus / primaryRealmTitle …）。
+    identity: Optional[CharacterIdentity] = None
+    # 现任个人官职 / 政权机构 / 宗教职务 / 荣誉 / 宣称（按语义分类聚合，均带显示名）。
+    personalOffices: List[EntityRef] = Field(default_factory=list)
+    realmInstitutions: List[EntityRef] = Field(default_factory=list)
+    religiousOffices: List[EntityRef] = Field(default_factory=list)
+    honors: List[EntityRef] = Field(default_factory=list)
+    claims: List[EntityRef] = Field(default_factory=list)
+    # 现任主要领地（主权/领地王国以上）与从属领地（伯/男爵领）。
+    majorTerritories: List[EntityRef] = Field(default_factory=list)
+    subordinateTerritories: List[EntityRef] = Field(default_factory=list)
+    # 历史语义事件（同日大量 title 变更按语义类型拆分；不推断因果）。
+    historicalEvents: List[HistoricalSemanticEvent] = Field(default_factory=list)
+
     timeline: List[TimelineEvent] = Field(default_factory=list)
     evidenceWarnings: List[EvidenceWarning] = Field(default_factory=list)
 
@@ -409,6 +583,9 @@ class CharacterSummary(BaseModel):
     isPlayerDynasty: bool = False
     portraitKey: Optional[str] = None
     evidenceWarningCount: int = 0
+    # ---- Phase 3C：身份摘要（PrimaryIdentityResolver 确定性产出；无法判定时留空）----
+    headlineIdentity: Optional[str] = None
+    realmStatus: Optional[RealmStatus] = None
 
 
 # 索引条目与摘要同形（保持两个命名同时存在，便于前后端引用）。
@@ -446,6 +623,10 @@ class BiographyChapter(BaseModel):
     content: str
     # 本章正文所追溯的时间线事件 id，不得为空（运行时校验）。
     eventIds: List[str] = Field(min_length=1)
+    # 3C.5：本章正文所依赖的事实 id（确定性回填：由本章 eventIds 对应事件所锚定的事实推导）。
+    factIds: List[str] = Field(default_factory=list)
+    # 3C.5：本章正文中的确定性主张（由模型依据事实撰写，经 FactChecker 校验）。
+    claims: List[str] = Field(default_factory=list)
 
     @field_validator("eventIds")
     @classmethod
@@ -475,6 +656,8 @@ class Biography(BaseModel):
     modelName: str
     factCheck: Optional[FactCheckResult] = None
     profileDigest: Optional[str] = None
+    # 3C.5：全文所用的事实集（确定性提炼，供 factIds 与校验追溯）。
+    facts: List[FactRef] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

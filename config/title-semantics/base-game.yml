@@ -1,0 +1,58 @@
+# SHIGUAN —— 基座游戏（vanilla）头衔语义规则（Phase 3C.2）
+#
+# 规则按层加载：user-overrides.yml > mods/*.yml > generic.yml > base-game.yml
+# 首个命中的层生效；全部未命中 → 内置启发式（heuristic 层）。
+# 本文件只描述基座游戏结构，绝不包含特定 Mod 的命名规则
+# （Mod 规则放 mods/，用户私有覆盖放 user-overrides.yml）。
+version: 1
+rules:
+  # ---- 宗教职务（教宗/教廷等常见键名；须排在 k_/d_ 领地规则之前，否则被吞）----
+  # 覆盖 k_papacy_*/k_papal_state/d_papacy/k_pope_* 等形态；其余宗教头衔
+  # （如 d_patriarchate_in_the_east）无稳定前缀，诚实保持为领地，不强行归类。
+  - id: vanilla_religious_office
+    match: { key_re: "^[kd]_(pope|papacy|papal)" }
+    classify: { semantic_type: religious_office, confidence: confirmed }
+
+  # ---- 领地头衔（按键前缀识别；adjust_by_liege 再按封臣结构细分主权/领地）----
+  # 注意：e_ 规则用负向前瞻排除 e_minister_* —— 该前缀属于特定 Mod 的政权机构
+  # 命名空间（政事堂/御史台/枢密院/六部），应由 mods/ 或 user-overrides.yml 覆盖，
+  # 基座规则不得把它误当帝国领地。
+  - id: vanilla_landed_e
+    match: { key_re: "^(?!e_minister_)e_" }
+    classify: { semantic_type: sovereign_realm_title, confidence: confirmed }
+    adjust_by_liege: true
+  - id: vanilla_landed_k
+    match: { prefix: "k_" }
+    classify: { semantic_type: territorial_realm_title, confidence: confirmed }
+    adjust_by_liege: true
+  - id: vanilla_landed_d
+    match: { prefix: "d_" }
+    classify: { semantic_type: territorial_realm_title, confidence: confirmed }
+    adjust_by_liege: true
+  - id: vanilla_landed_c
+    match: { prefix: "c_" }
+    classify: { semantic_type: subordinate_territory, confidence: confirmed }
+    adjust_by_liege: true
+  - id: vanilla_landed_b
+    match: { prefix: "b_" }
+    classify: { semantic_type: subordinate_territory, confidence: confirmed }
+    adjust_by_liege: true
+
+  # ---- 超帝国身份头衔（h_*：不在地图上的帝国身份，如 h_china/h_india）----
+  - id: vanilla_super_empire
+    match: { prefix: "h_" }
+    classify: { semantic_type: sovereign_realm_title, confidence: confirmed }
+
+  # ---- 无地头衔（x_*：T&T 无地冒险者体系）----
+  - id: vanilla_x_family
+    match: { prefix: "x_nf_" }
+    classify: { semantic_type: dynasty_identity, confidence: confirmed }
+  - id: vanilla_x_nomad_camp
+    match: { prefix: "x_c_nomad_" }
+    classify: { semantic_type: temporary_title, confidence: inferred }
+  - id: vanilla_x_scripted
+    match: { prefix: "x_script_" }
+    classify: { semantic_type: special_mod_title, confidence: inferred }
+  - id: vanilla_x_other
+    match: { prefix: "x_" }
+    classify: { semantic_type: temporary_title, confidence: inferred }

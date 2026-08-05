@@ -1,0 +1,31 @@
+# SHIGUAN —— Mod 规则目录（Phase 3C.2）
+#
+# 每个 .yml 文件描述**一个** Mod 的头衔语义规则，仅在下列任一条件满足时激活
+# （否则不参与任何存档，避免污染其他 Mod 环境）：
+#
+#   meta:
+#     mods:                # 本 Mod 的标识子串（ugc 文件名 / descriptor 名 / mod_id）
+#       - "ugc_2222302033"
+#     title_signatures:    # 或：本 Mod 引入的标题键前缀（按存档内标题结构自动识别）
+#       - "e_minister_"
+#       - "x_nf_"
+#
+# 示例（复制一份改名为你的 Mod，并填上真实标识后使用）：
+---
+meta:
+  mods: ["ugc_2222302033"]           # ← 请改为你的 Mod 实际标识（mods.json 中的文件名或 descriptor name）
+  title_signatures: ["e_minister_", "x_nf_"]
+version: 1
+rules:
+  # 政权机构（政事堂 / 御史台 / 枢密院 / 吏部 / 户部 / 礼部 / 兵部 / 刑部 / 工部）
+  - id: realm_institutions
+    match: { prefix: "e_minister_" }
+    classify: { semantic_type: realm_institution, confidence: confirmed }
+  # 家族/世系身份头衔（梁家族等）
+  - id: dynasty_family_titles
+    match: { prefix: "x_nf_" }
+    classify: { semantic_type: dynasty_identity, confidence: confirmed }
+  # 帝号（唐 / 大周等，h_ 前缀在部分 Mod 中承载超帝国身份）
+  - id: imperial_identity
+    match: { prefix: "h_" }
+    classify: { semantic_type: sovereign_realm_title, confidence: confirmed }

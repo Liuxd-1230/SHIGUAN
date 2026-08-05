@@ -61,3 +61,6 @@ apps/web/dist/
 
 # ---- 本机开发工具目录（不上传） ----
 .zcode/
+
+# ---- Phase 3C：用户私有头衔语义覆盖（含个人 Mod 命名细节，绝不分发） ----
+config/title-semantics/user-overrides.yml
