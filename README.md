@@ -61,7 +61,7 @@ SHIGUAN/
 │  ├─ shared/       # 共享工具（后续）
 │  └─ biography-engine/ # 传记引擎（Phase 3）
 ├─ fixtures/mock/   # Phase 1 用的可信 Mock 数据
-├─ docs/            # 架构 / 存档格式 / 传记管线 / 路线图
+├─ docs/            # 架构 / 存档格式 / 传记管线 / 路线图 / 团队手册
 ├─ scripts/         # 构建与检查脚本（后续）
 ├─ .env.example
 ├─ README.md
@@ -75,6 +75,10 @@ SHIGUAN/
 **Phase 1B（纵向流程与状态管理打磨）已完成**：索引/档案按需加载、`validateProfileEnvelope` 运行时契约校验（修复返回包裹而非档案本体的真实 bug）、基于 History API 的可靠路由（修复 popstate 不刷新 location 的真实 bug）、传记页时间线↔正文双向滚动同步、史料依据面板仅高亮当前事件告警、确定性解析状态机（pending→running→success/error，支持中止与失败注入）、边界场景覆盖、PWA 安全缓存重写（显式静态白名单，绝不缓存敏感数据）、Vitest 32 项测试通过。验证见 [roadmap.md](docs/roadmap.md)。
 **Phase 1C（响应式 · 无障碍 · 视觉定稿 · PWA 收尾）已完成**：东方数字史馆设计语言定稿（paper/ink/cinnabar/gold/jade/indigo 通道化 Design Token + 系统字体回退，不下载不提交字体）、共享组件库（MuseumSurface / ScrollPanel / SealButton / InkDivider / PortraitFrame / EvidenceBadge / TimelineNode / PageHeading / EmptyState / AssetImage / icons）、四页面视觉改造、Framer Motion `MotionConfig reducedMotion="user"` 与 CSS 媒体查询双重 reduced-motion、加载竞态修复（按人物的 `profileRequestStateById` + `requestId` 新鲜度判定）、键盘可达性（skip-link / 路由切换焦点管理 / 44px 触控）、移动端单栏重排（正文置顶→时间线→史料）、`/design-lab` 视觉实验室（不进正式导航）、PWA 缓存策略抽离为可单测纯函数 `swCachePolicy.ts`、ESLint 8 链路（`npm run lint` / `lint:fix`）、新增 34 项测试（共 66 项全绿）。验证见 [roadmap.md](docs/roadmap.md)。
 **Phase 1C.1（验收修复与视觉收口）已完成**：补齐 `BiographyPage` 测试（12 项，全量 Vitest **96 项**）、`swHandler.ts` 可测试离线导航 handler（13 项）；路由无障碍（title 随路由含人物名、切换人物焦点重入 main）；克制动效（墨线延伸 / 朱砂落印 / 时间线脉冲 / 章节 `whileInView` 淡入 / EvidencePanel 交叉淡入，reduced-motion 双重降级）；东方素材生成 WebP（PNG 合计约 6.49 MB → WebP 约 1.11 MB，CSS `image-set` 回退）并移出 4 张参考图至 `docs/design-reference/`；`ParsePage` 移除 eslint-disable 改 `useCallback` 并修 deps 警告（`npm run lint` 零错误零警告）；清理临时产物并补 `.gitignore`；建立 `docs/ASSET_AUDIT.md` 素材审计表；经用户授权推送到公开远端。验证见 [roadmap.md](docs/roadmap.md)。
+**Phase 3A（本地优先传记提纲生成管线）已完成**：biography-engine（Provider 抽象 + 确定性压缩 v1 + 版本化提纲 Prompt + OutlineGenerator 校验重试）、`/api/llm/health`（脱敏）+ 提纲生成/列表 API + SQLite 记录（saveSignature→stale）、前端 OutlinePanel（点按钮才生成、按 errorCode 提示）。详见 [phase3a-report.md](docs/phase3a-report.md)。
+**Phase 3A.1（叙事输入收口）已完成**：CompressedProfile v2（统治/战争/告警摘要 + 绰号/家族/君主/主头衔 + 亲属分类限量）、WarNarrativeNormalizer（防御战争绝不写成宣战）、WarningAggregator（技术字段不进 prompt）、P0 头衔一致性（titleStatus 四态）、缓存 schema 版本写入 5 个缓存文件、旧提纲 compressionVersion→stale。
+**Phase 3B（正文逐章生成 + 确定性事实校验）已完成**：BiographyGenerator 逐章生成（每章只用该章事件，问题只重传该章、最多 2 次，重试耗尽→needs_revision 不伪装成功）、确定性 FactChecker（20 规则不调用 LLM）、正文/修订历史持久化（SQLite）+ 异步任务 API（POST→jobId→轮询进度→可取消）、前端 BiographyPanel（三层分层 + 进度条 + 记录徽标）。详见 [phase3b-report.md](docs/phase3b-report.md)。
+**团队协作**：新成员与每轮工作约定见 [team-workflow.md](docs/team-workflow.md)（运行/测试/数据边界/文档索引）与 [AGENTS.md](AGENTS.md)。
 详见 [`docs/roadmap.md`](docs/roadmap.md) 与 [`docs/architecture.md`](docs/architecture.md)。
 
 后续 Phase：
