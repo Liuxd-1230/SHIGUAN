@@ -31,13 +31,19 @@ from dataclasses import dataclass
 from typing import Optional
 
 from models import (
+    AcquisitionTypeSource,
+    CharacterDomain,
     Confidence,
     EntityRef,
     EvidenceRef,
     EvidenceWarning,
     EventType,
+    PlayerHistoryMarker,
     TimelineEvent,
+    TitleHistoryActionKind,
+    TitleHistoryRecord,
     TitlePeriod,
+    TitleStructure,
     TitleTier,
     WarningSeverity,
 )
@@ -46,6 +52,7 @@ from app.services.entity_index_builder import ReferenceResolver
 from app.services.localization import LocalizationLoader
 
 from biography_engine.historical_events import HistoricalEventSemanticBuilder
+from biography_engine.title_history_actions import TitleHistoryActionNormalizer
 from biography_engine.title_semantics import (
     TitleClassification,
     TitleDisplayResolver,
@@ -292,6 +299,13 @@ class TitleProfileIndex:
             entries, active_mod_ids=active_mod_ids
         )
         self._raw_entries = {str(e.get("key")): e for e in entries}
+        # 3C.7 P1：数字 title id → key 反查表（存档内 capital/de_jure_vassals/domain
+        # 均以数字 id 互引；titles.json 每个条目带 title_id 数字容器 id）。
+        self._id_to_key: dict[str, str] = {
+            str(e.get("title_id")): str(e.get("key"))
+            for e in entries
+            if e.get("title_id")
+        }
         for entry in entries:
             key = entry.get("key") or ""
             if not key:
@@ -347,6 +361,91 @@ class TitleProfileIndex:
             for cid, ps in self._periods.items()
             if any(p.isCurrent for p in ps)
         }
+
+    def key_for_id(self, title_id: str) -> Optional[str]:
+        """数字 title id → key（存档内 capital/de_jure_vassals/domain 均以数字 id 互引）。"""
+        return self._id_to_key.get(str(title_id))
+
+    def resolve_title_ref(self, numeric_id: Optional[str]) -> Optional[EntityRef]:
+        """把数字 title id 解析为 EntityRef（key 反查成功 → resolved；否则原样回退）。"""
+        if not numeric_id:
+            return None
+        key = self._id_to_key.get(str(numeric_id))
+        if key is None:
+            return EntityRef(
+                id=str(numeric_id), name=str(numeric_id), type="title",
+                resolved=False, sourcePath=f"landed_titles/{numeric_id}",
+            )
+        entry = self._raw_entries.get(key) or {}
+        name = entry.get("name") or key
+        return EntityRef(
+            id=key, name=name, type="title", resolved=name != key,
+            sourcePath=f"landed_titles/{key}",
+        )
+
+    def title_structure(self, title_id_or_key: str) -> Optional[TitleStructure]:
+        """3C.7 P1：单条头衔的结构化信息（TitleStructure 契约实例）。
+
+        接受 key（k_xxx）或数字 title id。历史记录逐条保留 rawType，
+        normalizedAction/typeSource 由 TitleHistoryActionNormalizer 确定性回填；
+        sourcePath 定位到 landed_titles/{key}/history/{date}。
+        """
+        tid = str(title_id_or_key)
+        key = self._id_to_key.get(tid, tid)
+        entry = self._raw_entries.get(key)
+        if entry is None:
+            return None
+        classification = self._classifications.get(key)
+        semantic_type = (
+            classification.semanticType if classification is not None else None
+        )
+        history = entry.get("history") or []
+        normalizer = TitleHistoryActionNormalizer()
+        records: list[TitleHistoryRecord] = []
+        for h in history:
+            date = str(h.get("date") or "")
+            raw_type = h.get("raw_type")
+            kind = str(h.get("kind") or "holder")
+            direction = _history_direction(raw_type, kind)
+            action = normalizer.normalize(
+                entry=entry,
+                date=date,
+                direction=direction,
+                semantic_type=semantic_type,
+                title_id=key,
+            )
+            records.append(
+                TitleHistoryRecord(
+                    date=date,
+                    holderId=str(h["holder_id"]) if h.get("holder_id") is not None else None,
+                    kind=kind,
+                    rawType=raw_type,
+                    normalizedAction=action.normalizedAction,
+                    typeSource=action.typeSource,
+                    sourcePath=f"landed_titles/{key}/history/{date}",
+                )
+            )
+        capital = entry.get("capital_title_id")
+        capital_key = self._id_to_key.get(str(capital)) if capital else None
+        de_jure_liege = entry.get("de_jure_liege_id")
+        de_jure_liege_key = self._id_to_key.get(str(de_jure_liege)) if de_jure_liege else None
+        return TitleStructure(
+            titleId=key,
+            name=entry.get("name") or key,
+            tier=_tier_of(entry.get("tier")),
+            capitalTitleId=capital_key,
+            capitalSourcePath=f"landed_titles/{key}/capital" if capital_key else None,
+            capitalResolved=bool(capital_key),
+            deJureLiegeId=de_jure_liege_key,
+            deJureVassalIds=[
+                k for n in (entry.get("de_jure_vassal_ids") or [])
+                if (k := self._id_to_key.get(str(n)))
+            ],
+            claimantIds=[str(c) for c in (entry.get("claimant_ids") or [])],
+            historyGovernment=list(entry.get("history_government") or []),
+            currentHolderId=str(entry["holder_id"]) if entry.get("holder_id") is not None else None,
+            history=records,
+        )
 
     def holder_ids_for_title(self, title_query: str) -> set[str]:
         """按头衔名（含 key 与解析后名）反查持有者 id 集合（M5 搜索）。
@@ -430,3 +529,80 @@ class TitleProfileIndex:
             )
         self._bits[cid] = bits
         return bits
+
+
+# ---------------------------------------------------------------------------
+# 3C.7 P1：domain ↔ holder 反查互相校验 + 玩家历史标记
+# ---------------------------------------------------------------------------
+
+# 这些 raw type 表示「失去/移交」方向（用于 TitleStructure.history 的逐条方向判定）。
+_LOSS_FAMILY_RAW = {
+    "destroyed",
+    "revoked",
+    "stepped_down",
+    "abdication",
+    "leased_out",
+}
+
+
+def _history_direction(raw_type: Optional[str], kind: str) -> str:
+    """单条 history 记录的方向：销毁/撤销/退位/租借类为 loss，其余为 gain。
+
+    Format A（kind=holder 裸持有者变更）与创建/授予/征服/继任等同视为获得。
+    """
+    if raw_type and str(raw_type) in _LOSS_FAMILY_RAW:
+        return "loss"
+    if str(kind) in ("created", "destroyed"):
+        return "loss" if str(kind) == "destroyed" else "gain"
+    return "gain"
+
+
+def build_character_domain(
+    domain_title_ids: list,
+    character_id: str,
+    index: Optional[TitleProfileIndex],
+) -> CharacterDomain:
+    """3C.7 P1：从人物侧 landed_data.domain 构建 CharacterDomain，并与 title holder 反查校验。
+
+    不一致时产生 warning 并降低 confidence（领域数据不再单独表达置信度，
+    以 warnings 记录，事件层由调用方据此降级），不得静默选择其中一边。
+    domain 为空（非统治者）→ 空列表 + consistent。
+    """
+    cid = str(character_id)
+    warnings: list[str] = []
+    title_ids: list[str] = []
+    mismatch = False
+    unresolved = 0
+    for raw in domain_title_ids or []:
+        numeric = str(raw)
+        key = index.key_for_id(numeric) if index is not None else None
+        if key is None:
+            unresolved += 1
+            title_ids.append(numeric)  # 无法反查 key，原样保留并计数
+            continue
+        title_ids.append(key)
+        entry = index.raw_entries().get(key) or {}
+        holder = entry.get("holder_id")
+        if holder is not None and str(holder) != cid:
+            mismatch = True
+            warnings.append(
+                f"领地 {key}（数字 id {numeric}）在 landed_data.domain 中归属本人物，"
+                f"但 title 顶层 holder 反查为 {holder}；两侧不一致，不静默选择。"
+            )
+    status = "mismatch" if mismatch else ("unresolved" if unresolved else "consistent")
+    return CharacterDomain(
+        titleIds=title_ids,
+        sourcePath=f"character/{cid}/landed_data/domain",
+        holderCrossCheck=status,
+        warnings=warnings,
+    )
+
+
+def build_player_marker(
+    was_player: bool, character_id: str, current_player_id: Optional[str]
+) -> PlayerHistoryMarker:
+    """3C.7 P1：playable_data.was_player 历史标记；isCurrentPlayer 由 meta.player_id 匹配。"""
+    return PlayerHistoryMarker(
+        wasPlayer=bool(was_player),
+        isCurrentPlayer=bool(was_player) and str(character_id) == str(current_player_id or ""),
+    )

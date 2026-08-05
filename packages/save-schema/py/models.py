@@ -675,6 +675,12 @@ class CharacterProfile(BaseModel):
     # 历史语义事件（同日大量 title 变更按语义类型拆分；不推断因果）。
     historicalEvents: List[HistoricalSemanticEvent] = Field(default_factory=list)
 
+    # ---- Phase 3C.7 P1：玩家历史标记 + 直控领地（安全默认值，缺字段旧 fixture 可兼容）----
+    # playable_data.was_player 历史标记；isCurrentPlayer 由 meta.player_id 匹配。
+    playerHistory: Optional[PlayerHistoryMarker] = None
+    # landed_data.domain 直控领地 + 与 title holder 反查互相校验结果。
+    domain: Optional[CharacterDomain] = None
+
     timeline: List[TimelineEvent] = Field(default_factory=list)
     evidenceWarnings: List[EvidenceWarning] = Field(default_factory=list)
 

@@ -81,6 +81,8 @@ from app.services.session_manager import SessionManager
 from app.services.settings_store import effective_paths, load_settings, save_settings
 from app.services.title_reign_extractor import (
     TitleProfileIndex,
+    build_character_domain,
+    build_player_marker,
     build_semantic_title_events,
 )
 from app.services.timeline_builder import merge_timeline
@@ -496,6 +498,19 @@ def _profile_parts(sess, save_id: str, character_id: str, stub: dict):
             "claims": aggregates["claims"],
         }
         title_warnings = title_index.warnings(character_id)
+        # 3C.7 P1：直控领地（landed_data.domain）与 title holder 反查互相校验。
+        semantic_bits["domain"] = build_character_domain(
+            stub.get("domain_titles") or [], character_id, title_index
+        )
+    # 3C.7 P1：玩家历史标记（was_player + meta.player_id 匹配 isCurrentPlayer）。
+    current_player_id = None
+    try:
+        current_player_id = (_session_manager.meta(sess) or {}).get("player_id")
+    except (ReaderExecutionError, ReaderMissingError):
+        current_player_id = None
+    semantic_bits["player_history"] = build_player_marker(
+        bool(stub.get("was_player")), character_id, current_player_id
+    )
     memory_index = None
     try:
         memory_index, _ = _memory_index(sess, save_id, resolver=resolver)
@@ -843,10 +858,18 @@ def character_titles_endpoint(save_id: str, character_id: str):
         raise _fail(500, "reader_error", str(exc)) from exc
     periods = index.periods(character_id)
     title_warnings = [w.message for w in index.warnings(character_id)]
+    # 3C.7 P1：该人物历任/现任头衔的结构化信息（capital/de_jure/claims/history_government/
+    # history 逐条 normalizedAction + sourcePath），供 TitleStructure 契约消费。
+    structures: dict[str, dict] = {}
+    for p in periods:
+        st = index.title_structure(p.titleId)
+        if st is not None:
+            structures[p.titleId] = st.model_dump()
     return {
         "saveId": save_id,
         "characterId": character_id,
         "titles": [p.model_dump() for p in periods],
+        "structures": structures,
         "warnings": scanner_warnings + title_warnings,
     }
 

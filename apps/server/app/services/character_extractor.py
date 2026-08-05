@@ -686,6 +686,9 @@ def to_profile(
     religious_offices: Optional[list] = None,
     honors: Optional[list] = None,
     claims: Optional[list] = None,
+    # ---- 3C.7 P1：玩家历史标记 + 直控领地（由 _profile_parts 预计算传入）----
+    player_history: Optional[object] = None,
+    domain: Optional[object] = None,
 ) -> CharacterProfile:
     """由缓存人物记录构建最小可信 CharacterProfile（带来源路径与证据）。
 
@@ -875,6 +878,9 @@ def to_profile(
         majorTerritories=major_territories or [],
         subordinateTerritories=subordinate_territories or [],
         historicalEvents=historical_events or [],
+        # 3C.7 P1：玩家历史标记 + 直控领地（可缺省，安全默认值兼容旧调用方）。
+        playerHistory=player_history,
+        domain=domain,
         timeline=timeline,
         evidenceWarnings=warnings,
     )

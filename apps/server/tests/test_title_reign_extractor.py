@@ -560,3 +560,184 @@ def test_build_semantic_title_events_same_day_split_by_semantic_type():
     assert "territorial_gain" in sem_types and "institution_transition" in sem_types
     assert "战争" not in territorial[0].description  # 不编造战争原因
     assert len(territorial[0].evidence) == 3  # 组内全部证据可追溯
+
+
+# ---------------------------------------------------------------------------
+# 3C.7 P1：TitleStructure / CharacterDomain / PlayerHistoryMarker
+# ---------------------------------------------------------------------------
+
+def _raw_titles_p1() -> dict:
+    return {
+        "schema_version": 1,
+        "reader_version": "0.1.0",
+        "scan_ms": 1.0,
+        "title_count": 3,
+        "titles": [
+            {
+                "title_id": "15120",
+                "key": "e_liangyi",
+                "name": "两仪",
+                "name_source": "save",
+                "tier": "empire",
+                "holder_id": "20423",
+                "de_facto_liege_id": None,
+                "capital_title_id": "15124",
+                "de_jure_liege_id": None,
+                "de_jure_vassal_ids": ["15121", "15224"],
+                "claimant_ids": ["21599", "22216"],
+                "history_government": [{"date": None, "government": "celestial_government"}],
+                "history": [
+                    {"date": "907.9.1", "holder_id": "16473", "kind": "holder"},
+                    {"date": "918.7.11", "holder_id": "20423", "kind": "other",
+                     "raw_type": "appointment_succession"},
+                ],
+            },
+            {
+                "title_id": "15121",
+                "key": "k_youji",
+                "name": "幽蓟",
+                "name_source": "save",
+                "tier": "kingdom",
+                "holder_id": "20423",
+                "de_facto_liege_id": None,
+                "capital_title_id": "15124",
+                "de_jure_liege_id": "15120",
+                "de_jure_vassal_ids": [],
+                "claimant_ids": [],
+                "history_government": [],
+                "history": [
+                    {"date": "955.1.22", "holder_id": "20423", "kind": "other",
+                     "raw_type": "conquest"},
+                ],
+            },
+            {
+                "title_id": "15224",
+                "key": "c_quanjiao",
+                "name": "权教",
+                "name_source": "save",
+                "tier": "county",
+                "holder_id": "777",
+                "de_facto_liege_id": None,
+                "capital_title_id": None,
+                "de_jure_liege_id": "15120",
+                "de_jure_vassal_ids": [],
+                "claimant_ids": [],
+                "history_government": [],
+                "history": [],
+            },
+            {
+                "title_id": "15124",
+                "key": "c_youji",
+                "name": "幽州",
+                "name_source": "save",
+                "tier": "county",
+                "holder_id": "20423",
+                "de_facto_liege_id": None,
+                "capital_title_id": None,
+                "de_jure_liege_id": "15121",
+                "de_jure_vassal_ids": [],
+                "claimant_ids": [],
+                "history_government": [],
+                "history": [],
+            },
+        ],
+        "warnings": [],
+    }
+
+
+def test_index_title_structure_normalizes_history_and_resolves_refs():
+    from app.services.title_reign_extractor import TitleProfileIndex
+
+    idx = TitleProfileIndex(_raw_titles_p1())
+    # 数字 id 反查 key。
+    assert idx.key_for_id("15120") == "e_liangyi"
+    assert idx.key_for_id("999999") is None
+
+    st = idx.title_structure("e_liangyi")
+    assert st is not None
+    # capital / de_jure_vassals 数字引用 → key。
+    assert st.capitalTitleId == "c_youji"
+    assert st.capitalSourcePath == "landed_titles/e_liangyi/capital"
+    assert st.capitalResolved is True
+    assert st.deJureVassalIds == ["k_youji", "c_quanjiao"]
+    assert st.claimantIds == ["21599", "22216"]
+    assert st.historyGovernment == [{"date": None, "government": "celestial_government"}]
+    assert st.currentHolderId == "20423"
+    # 历史逐条保留 rawType + normalizedAction + typeSource + sourcePath。
+    assert len(st.history) == 2
+    app_succ = [h for h in st.history if h.rawType == "appointment_succession"][0]
+    assert app_succ.normalizedAction.value == "administrative_succession"
+    assert app_succ.typeSource.value == "save_explicit"
+    assert app_succ.sourcePath == "landed_titles/e_liangyi/history/918.7.11"
+    holder = [h for h in st.history if h.kind == "holder"][0]
+    assert holder.rawType is None
+    assert holder.normalizedAction.value == "unknown"
+
+    # 法理宗主（de_jure_liege）数字引用 → key。
+    st2 = idx.title_structure("k_youji")
+    assert st2.deJureLiegeId == "e_liangyi"
+    assert st2.capitalTitleId == "c_youji"
+    assert st2.capitalResolved is True
+    # 无 capital 的头衔 → 安全空值。
+    st3 = idx.title_structure("c_quanjiao")
+    assert st3.capitalTitleId is None
+    assert st3.capitalResolved is False
+    assert st3.deJureVassalIds == []
+
+
+def test_index_title_structure_accepts_numeric_id():
+    from app.services.title_reign_extractor import TitleProfileIndex
+
+    idx = TitleProfileIndex(_raw_titles_p1())
+    st = idx.title_structure("15121")
+    assert st is not None
+    assert st.titleId == "k_youji"
+    assert idx.title_structure("no_such_title") is None
+
+
+def test_build_character_domain_consistent_and_mismatch():
+    from app.services.title_reign_extractor import TitleProfileIndex, build_character_domain
+
+    idx = TitleProfileIndex(_raw_titles_p1())
+    # domain 数字 id 与 title holder 反查一致 → consistent。
+    dom = build_character_domain(["15120", "15121"], "20423", idx)
+    assert dom.titleIds == ["e_liangyi", "k_youji"]
+    assert dom.holderCrossCheck == "consistent"
+    assert dom.warnings == []
+    assert dom.sourcePath == "character/20423/landed_data/domain"
+
+    # domain 与 holder 反查不一致 → mismatch + warning，不静默选择一边。
+    dom2 = build_character_domain(["15224"], "20423", idx)
+    assert dom2.titleIds == ["c_quanjiao"]
+    assert dom2.holderCrossCheck == "mismatch"
+    assert len(dom2.warnings) == 1
+    assert "holder 反查为 777" in dom2.warnings[0]
+
+    # domain 数字 id 无法反查 key → unresolved（保留原 id，不伪造）。
+    dom3 = build_character_domain(["999999"], "20423", idx)
+    assert dom3.titleIds == ["999999"]
+    assert dom3.holderCrossCheck == "unresolved"
+    assert dom3.warnings == []
+
+    # 非统治者（无 domain）→ 空列表 + consistent。
+    dom4 = build_character_domain([], "20423", idx)
+    assert dom4.titleIds == []
+    assert dom4.holderCrossCheck == "consistent"
+
+
+def test_build_player_marker_matches_current_player():
+    from app.services.title_reign_extractor import build_player_marker
+
+    # 曾被玩家控制 + 是当前玩家。
+    m = build_player_marker(True, "20423", "20423")
+    assert m.wasPlayer is True
+    assert m.isCurrentPlayer is True
+    # 曾被玩家控制 + 非当前玩家（历史玩家角色保留标记）。
+    m2 = build_player_marker(True, "20423", "20423")
+    m2 = build_player_marker(True, "20423", "500")
+    assert m2.wasPlayer is True
+    assert m2.isCurrentPlayer is False
+    # 非玩家控制人物 → 双 false。
+    m3 = build_player_marker(False, "20423", "20423")
+    assert m3.wasPlayer is False
+    assert m3.isCurrentPlayer is False

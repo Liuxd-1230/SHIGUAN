@@ -126,3 +126,38 @@ describe("运行时边界校验（不依赖 TS 类型断言）", () => {
     expect(() => validateProfileEnvelope(env, "abc")).toThrow(/必须是数组/);
   });
 });
+
+describe("3C.7 P1：playerHistory / domain 结构校验", () => {
+  it("合法 PlayerHistoryMarker 通过校验", () => {
+    const env = validProfileEnv("abc");
+    env.data.playerHistory = { wasPlayer: true, isCurrentPlayer: false };
+    expect(validateProfileEnvelope(env, "abc").playerHistory?.wasPlayer).toBe(true);
+  });
+
+  it("playerHistory 字段类型错误被拒绝", () => {
+    const env = validProfileEnv("abc");
+    // @ts-expect-error 故意注入非法形状
+    env.data.playerHistory = { wasPlayer: "yes" };
+    expect(() => validateProfileEnvelope(env, "abc")).toThrow(/playerHistory\.wasPlayer/);
+  });
+
+  it("合法 CharacterDomain 通过校验", () => {
+    const env = validProfileEnv("abc");
+    env.data.domain = {
+      titleIds: ["e_liangyi", "k_youji"],
+      sourcePath: "character/abc/landed_data/domain",
+      holderCrossCheck: "consistent",
+      warnings: [],
+    };
+    expect(validateProfileEnvelope(env, "abc").domain?.holderCrossCheck).toBe(
+      "consistent",
+    );
+  });
+
+  it("domain.titleIds 非数组被拒绝", () => {
+    const env = validProfileEnv("abc");
+    // @ts-expect-error 故意注入非法形状
+    env.data.domain = { titleIds: "not-array" };
+    expect(() => validateProfileEnvelope(env, "abc")).toThrow(/domain\.titleIds/);
+  });
+});

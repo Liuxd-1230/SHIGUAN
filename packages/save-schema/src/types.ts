@@ -322,6 +322,11 @@ export interface CharacterProfile {
   /** 3C：历史语义事件（同日大量 title 变更按语义类型拆分；不推断因果）。 */
   historicalEvents?: HistoricalSemanticEvent[];
 
+  /** 3C.7 P1：玩家历史标记（playable_data.was_player；isCurrentPlayer 由 meta.playerId 匹配）。 */
+  playerHistory?: PlayerHistoryMarker;
+  /** 3C.7 P1：直控领地（landed_data.domain）+ 与 title holder 反查互相校验结果。 */
+  domain?: CharacterDomain;
+
   /** 经过排序/合并/压缩、准备呈现与喂给模型的时间线。 */
   timeline: TimelineEvent[];
   /** 证据层面的告警与不确定项。 */

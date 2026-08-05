@@ -34,7 +34,9 @@ export type ValidationIssue =
   | "bad_confidence"
   | "bad_evidence"
   | "bad_char_ref_array"
-  | "bad_char_ref";
+  | "bad_char_ref"
+  | "bad_player_history"
+  | "bad_character_domain";
 
 export class ContractValidationError extends Error {
   constructor(public kind: ValidationIssue, message: string) {
@@ -209,8 +211,49 @@ export function validateProfileEnvelope(
   data.timeline.forEach(validateTimelineEvent);
   // M5.1：人物引用列表（父母/子女/兄弟姐妹/好友/宿敌/恋人）结构校验。
   validateCharacterRefFields(data);
+  // 3C.7 P1：playerHistory / domain 若存在，校验结构合法（安全默认值兼容旧档案）。
+  validatePlayerHistory(data.playerHistory);
+  validateCharacterDomain(data.domain);
   // 返回档案本身（data），而非整个包裹；调用方按 CharacterProfile 使用。
   return data as unknown as CharacterProfile;
+}
+
+/** 3C.7 P1：PlayerHistoryMarker 结构校验（wasPlayer / isCurrentPlayer 均为可选 boolean）。 */
+function validatePlayerHistory(v: unknown): void {
+  if (v === undefined) return;
+  if (!isPlainObject(v)) {
+    throw new ContractValidationError(
+      "bad_player_history",
+      "档案的 playerHistory 必须是对象。",
+    );
+  }
+  const m = v as Record<string, unknown>;
+  for (const k of ["wasPlayer", "isCurrentPlayer"]) {
+    if (m[k] !== undefined && typeof m[k] !== "boolean") {
+      throw new ContractValidationError(
+        "bad_player_history",
+        `档案 playerHistory.${k} 必须是 boolean。`,
+      );
+    }
+  }
+}
+
+/** 3C.7 P1：CharacterDomain 结构校验（titleIds 数组 + 可选 cross-check 状态）。 */
+function validateCharacterDomain(v: unknown): void {
+  if (v === undefined) return;
+  if (!isPlainObject(v)) {
+    throw new ContractValidationError(
+      "bad_character_domain",
+      "档案的 domain 必须是对象。",
+    );
+  }
+  const d = v as Record<string, unknown>;
+  if (d.titleIds !== undefined && !Array.isArray(d.titleIds)) {
+    throw new ContractValidationError(
+      "bad_character_domain",
+      "档案 domain.titleIds 必须是数组。",
+    );
+  }
 }
 
 /** 类型守卫：判断是否为可信的 TimelineEvent（供组件层使用）。 */
